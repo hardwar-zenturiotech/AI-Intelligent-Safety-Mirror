@@ -131,6 +131,43 @@
               </button>
             </details>
 
+            <section class="calibration-controls" aria-labelledby="avatarCalibrationTitle">
+              <div class="calibration-heading">
+                <div>
+                  <p class="eyebrow">HUMAN 3D MODEL CALIBRATION</p>
+                  <h3 id="avatarCalibrationTitle">Calibrate 3D avatar</h3>
+                </div>
+                <button class="reset-button" id="resetAvatarSliders" type="button">
+                  Reset
+                </button>
+              </div>
+              <div class="calibration-grid">
+                <label class="calibration-slider" for="avatarSize">
+                  <span class="calibration-label">
+                    <span>Size scale</span>
+                    <output id="avatarSizeValue" for="avatarSize">100%</output>
+                  </span>
+                  <input id="avatarSize" type="range" min="30" max="250" value="100" />
+                </label>
+                <label class="calibration-slider" for="avatarDepth">
+                  <span class="calibration-label">
+                    <span>Depth offset</span>
+                    <output id="avatarDepthValue" for="avatarDepth">0 px</output>
+                  </span>
+                  <input
+                    id="avatarDepth"
+                    type="range"
+                    min="-500"
+                    max="500"
+                    value="0"
+                  />
+                </label>
+              </div>
+              <p class="calibration-help">
+                Adjust the 3D human model size scale and forward/backward depth offset.
+              </p>
+            </section>
+
             <section class="calibration-controls" aria-labelledby="calibrationTitle">
               <div class="calibration-heading">
                 <div>
@@ -233,11 +270,11 @@
                 </span>
                 <span class="equipment-check" aria-hidden="true"></span>
               </button>
-              <button class="equipment-item" type="button" aria-pressed="false">
+              <button class="equipment-item" type="button" aria-pressed="false" id="respiratorToggle" data-equipment="respirator">
                 <span class="equipment-icon" aria-hidden="true">R</span>
                 <span class="equipment-copy">
                   <strong>Respirator</strong>
-                  <span>Respiratory protection</span>
+                  <span>Gas mask overlay</span>
                 </span>
                 <span class="equipment-check" aria-hidden="true"></span>
               </button>

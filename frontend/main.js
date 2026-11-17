@@ -36,6 +36,12 @@ const maskOffsetYValue = document.querySelector("#maskOffsetYValue");
 const maskDepthInput = document.querySelector("#maskDepth");
 const maskDepthValue = document.querySelector("#maskDepthValue");
 const resetCalibration = document.querySelector("#resetCalibration");
+const avatarSizeInput = document.querySelector("#avatarSize");
+const avatarSizeValue = document.querySelector("#avatarSizeValue");
+const avatarDepthInput = document.querySelector("#avatarDepth");
+const avatarDepthValue = document.querySelector("#avatarDepthValue");
+const resetAvatarSliders = document.querySelector("#resetAvatarSliders");
+const respiratorToggle = document.querySelector("#respiratorToggle");
 const renderMode = document.querySelector("#renderMode");
 const poseStatus = document.querySelector("#poseStatus");
 const boneReport = document.querySelector("#boneReport");
@@ -130,7 +136,7 @@ async function startCamera() {
     }
     void initializeFaceOverlay(cameraStream);
     updateRecordingControls();
-    recordingMessage.textContent = "Ready to record the camera with its mask overlay.";
+    recordingMessage.textContent = "Ready to record session to recordings/.";
   } catch (error) {
     if (!cameraStream && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError")) {
       cameraMessage.textContent =
@@ -216,11 +222,57 @@ cameraToggle.addEventListener("click", () => {
   }
 });
 
+let recordingCanvas = null;
+let recordingCtx = null;
+let recordingFrameId = null;
+
+function renderCompositeRecordingFrame() {
+  if (mediaRecorder?.state !== "recording" || !recordingCtx || !recordingCanvas) {
+    return;
+  }
+  recordingFrameId = requestAnimationFrame(renderCompositeRecordingFrame);
+
+  const w = recordingCanvas.width;
+  const h = recordingCanvas.height;
+
+  // Solid background
+  recordingCtx.fillStyle = "#141b1c";
+  recordingCtx.fillRect(0, 0, w, h);
+
+  // Draw Camera Feed
+  if (cameraPreview && cameraPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    recordingCtx.save();
+    // In camera mode, mirror horizontally to match the mirror preview
+    if (renderMode.value !== "environment") {
+      recordingCtx.translate(w, 0);
+      recordingCtx.scale(-1, 1);
+    }
+    recordingCtx.drawImage(cameraPreview, 0, 0, w, h);
+    recordingCtx.restore();
+  }
+
+  // Draw 3D Avatar (if loaded and active)
+  const avatarCanvas = avatar?.renderer?.domElement;
+  if (avatarCanvas && avatarCanvas.width > 0 && avatarCanvas.height > 0) {
+    recordingCtx.drawImage(avatarCanvas, 0, 0, w, h);
+  }
+
+  // Draw Gas Mask overlay (if respirator selected and visible)
+  const maskCanvas = maskOverlayRenderer?.domElement;
+  if (maskCanvas && maskOverlayModel?.visible && maskCanvas.width > 0 && maskCanvas.height > 0) {
+    recordingCtx.drawImage(maskCanvas, 0, 0, w, h);
+  }
+
+  // Draw Pose Debug skeleton (if visible)
+  if (poseDebugCanvas && !poseDebugCanvas.hidden && poseDebugCanvas.width > 0 && poseDebugCanvas.height > 0) {
+    recordingCtx.drawImage(poseDebugCanvas, 0, 0, w, h);
+  }
+}
+
 function updateRecordingControls() {
   const isRecording = mediaRecorder?.state === "recording";
   const canRecord =
     Boolean(cameraStream) &&
-    Boolean(maskOverlayRenderer?.domElement.captureStream) &&
     typeof MediaRecorder !== "undefined" &&
     !recordingSaving;
 
@@ -235,9 +287,10 @@ function updateRecordingControls() {
 
 async function saveRecording(blob) {
   try {
+    recordingMessage.textContent = "Saving clip to recordings/...";
     const response = await fetch("/api/recordings", {
       method: "POST",
-      headers: { "Content-Type": blob.type },
+      headers: { "Content-Type": blob.type || "video/webm" },
       body: blob,
     });
     const result = await response.json().catch(() => null);
@@ -249,8 +302,23 @@ async function saveRecording(blob) {
     }
     recordingMessage.textContent = `Saved to recordings/${result.filename}`;
   } catch (error) {
-    console.error("Could not save the browser recording.", error);
-    recordingMessage.textContent = `Could not save the clip: ${error.message}`;
+    console.error("Could not save the browser recording to server.", error);
+    // Automatic fallback: download locally in browser so recorded clip is never lost
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const ext = (blob.type || "").includes("mp4") ? "mp4" : "webm";
+      const filename = `safety_mirror_${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      recordingMessage.textContent = `Server save failed (${error.message}); saved via browser download as ${filename}`;
+    } catch (fallbackError) {
+      recordingMessage.textContent = `Could not save the clip: ${error.message}`;
+    }
   } finally {
     recordingSaving = false;
     cameraToggle.disabled = false;
@@ -259,8 +327,8 @@ async function saveRecording(blob) {
 }
 
 function startRecording() {
-  if (!cameraStream || !maskOverlayRenderer) {
-    throw new Error("Start the camera and wait for the mask overlay before recording.");
+  if (!cameraStream) {
+    throw new Error("Start the camera before recording.");
   }
   if (typeof MediaRecorder === "undefined") {
     throw new Error("This browser does not support video recording.");
@@ -270,16 +338,40 @@ function startRecording() {
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
-  ].find((candidate) => MediaRecorder.isTypeSupported(candidate));
-  if (!mimeType) {
-    throw new Error("This browser does not support WebM video recording.");
+    "video/mp4;codecs=avc1",
+    "video/mp4",
+  ].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+
+  // Set up composite recording canvas
+  const stage = cameraStage.getBoundingClientRect();
+  const width = cameraPreview.videoWidth || Math.round(stage.width) || 1280;
+  const height = cameraPreview.videoHeight || Math.round(stage.height) || 720;
+
+  if (!recordingCanvas) {
+    recordingCanvas = document.createElement("canvas");
+  }
+  recordingCanvas.width = width;
+  recordingCanvas.height = height;
+  recordingCtx = recordingCanvas.getContext("2d");
+
+  let recordingStream;
+  try {
+    recordingStream = recordingCanvas.captureStream(30);
+  } catch (error) {
+    console.warn("Canvas captureStream failed; falling back to direct camera stream.", error);
+    recordingStream = cameraStream.clone();
   }
 
-  const recordingStream = maskOverlayRenderer.domElement.captureStream(30);
   let recorder;
   try {
-    recorder = new MediaRecorder(recordingStream, { mimeType });
+    recorder = mimeType
+      ? new MediaRecorder(recordingStream, { mimeType })
+      : new MediaRecorder(recordingStream);
   } catch (error) {
+    if (recordingFrameId) {
+      cancelAnimationFrame(recordingFrameId);
+      recordingFrameId = null;
+    }
     recordingStream.getTracks().forEach((track) => track.stop());
     throw new Error(`Could not start recording: ${error.message}`);
   }
@@ -287,11 +379,13 @@ function startRecording() {
   let recordingError = null;
   mediaRecorder = recorder;
   recordingChunks = [];
+
   recorder.addEventListener("dataavailable", (event) => {
-    if (event.data.size > 0) {
+    if (event.data && event.data.size > 0) {
       recordingChunks.push(event.data);
     }
   });
+
   recorder.addEventListener("error", (event) => {
     recordingError = event.error || new Error("The browser recorder failed.");
     console.error("Browser recording failed.", recordingError);
@@ -300,7 +394,12 @@ function startRecording() {
       recorder.stop();
     }
   });
+
   recorder.addEventListener("stop", () => {
+    if (recordingFrameId) {
+      cancelAnimationFrame(recordingFrameId);
+      recordingFrameId = null;
+    }
     recordingStream.getTracks().forEach((track) => track.stop());
     mediaRecorder = null;
     updateRecordingControls();
@@ -311,8 +410,10 @@ function startRecording() {
       return;
     }
 
-    const blob = new Blob(recordingChunks, { type: recorder.mimeType });
+    const recordedType = recorder.mimeType || mimeType || "video/webm";
+    const blob = new Blob(recordingChunks, { type: recordedType });
     recordingChunks = [];
+
     if (blob.size === 0) {
       recordingMessage.textContent = "No video data was captured; the clip was not saved.";
       cameraToggle.disabled = false;
@@ -329,7 +430,12 @@ function startRecording() {
 
   try {
     recorder.start(1000);
+    renderCompositeRecordingFrame();
   } catch (error) {
+    if (recordingFrameId) {
+      cancelAnimationFrame(recordingFrameId);
+      recordingFrameId = null;
+    }
     mediaRecorder = null;
     recordingStream.getTracks().forEach((track) => track.stop());
     updateRecordingControls();
@@ -337,7 +443,7 @@ function startRecording() {
   }
 
   cameraToggle.disabled = true;
-  recordingMessage.textContent = "Recording camera and mask overlay...";
+  recordingMessage.textContent = "Recording safety mirror session...";
   updateRecordingControls();
 }
 
@@ -608,7 +714,7 @@ function updateRetargetingReadout() {
     `model torso/head-shoulder ${avatar.modelTorsoHeight.toFixed(3)} / ` +
     `${avatar.modelHeadShoulderHeight.toFixed(3)}, scale x/y ${avatar.group.scale.x.toFixed(1)} / ` +
     `${avatar.group.scale.y.toFixed(1)} (target ${avatar.scaleTarget.x.toFixed(1)} / ` +
-    `${avatar.scaleTarget.y.toFixed(1)}); ` +
+    `${avatar.scaleTarget.y.toFixed(1)}), depth Z ${avatar.lastDetectedDepth?.toFixed(1) ?? "0.0"} px; ` +
     `mean joint offset ${avatar.lastJointErrorPx?.toFixed(1) ?? "--"} px; offsets ` +
     `${Object.entries(avatar.lastJointOffsets).map(([role, error]) => `${role}:${error}`).join(", ") || "--"} px.`;
 }
@@ -784,12 +890,40 @@ renderMode.addEventListener("change", () => {
   avatar.setRenderMode(environmentMode ? "environment" : "camera");
 });
 
+function isRespiratorActive() {
+  return respiratorToggle?.getAttribute("aria-pressed") === "true";
+}
+
+function updateAvatarSliders() {
+  if (!avatarSizeInput || !avatarDepthInput) return;
+  const size = Number(avatarSizeInput.value) / 100;
+  const depth = Number(avatarDepthInput.value);
+  if (avatarSizeValue) avatarSizeValue.value = `${avatarSizeInput.value}%`;
+  if (avatarDepthValue) avatarDepthValue.value = `${depth} px`;
+  avatar.setUserCalibration({ size, depth });
+}
+
+[avatarSizeInput, avatarDepthInput].forEach((input) => {
+  input?.addEventListener("input", updateAvatarSliders);
+});
+
+resetAvatarSliders?.addEventListener("click", () => {
+  if (avatarSizeInput) avatarSizeInput.value = "100";
+  if (avatarDepthInput) avatarDepthInput.value = "0";
+  updateAvatarSliders();
+  avatar.resetCalibration();
+});
+
 resetAvatarCalibration.addEventListener("click", () => {
+  if (avatarSizeInput) avatarSizeInput.value = "100";
+  if (avatarDepthInput) avatarDepthInput.value = "0";
+  updateAvatarSliders();
   avatar.resetCalibration();
   setPoseStatus("Avatar pose reset; position will be reacquired from tracking.", "ready");
 });
 
 updateCalibration();
+updateAvatarSliders();
 
 equipmentItems.forEach((item) => {
   item.addEventListener("click", () => {
@@ -800,6 +934,29 @@ equipmentItems.forEach((item) => {
       '.equipment-item[aria-pressed="true"]',
     ).length;
     checkCount.textContent = `${selectedCount} / ${equipmentItems.length}`;
+
+    if (item === respiratorToggle || item.dataset.equipment === "respirator") {
+      const active = item.getAttribute("aria-pressed") === "true";
+      if (!active) {
+        if (maskOverlayModel) {
+          maskOverlayModel.visible = false;
+        }
+        if (faceOccluder) {
+          faceOccluder.visible = false;
+        }
+        if (headOccluder) {
+          headOccluder.visible = false;
+        }
+        maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+        if (cameraStream) {
+          cameraMessage.textContent =
+            "Gas mask overlay disabled (Respirator unselected in PPE checklist).";
+        }
+      } else if (cameraStream) {
+        cameraMessage.textContent =
+          "Gas mask overlay enabled (Respirator selected in PPE checklist).";
+      }
+    }
   });
 });
 
@@ -1099,6 +1256,20 @@ function updateFaceOccluder(
 }
 
 function updateMaskOverlay(landmarks) {
+  if (!isRespiratorActive()) {
+    if (maskOverlayModel) {
+      maskOverlayModel.visible = false;
+    }
+    if (faceOccluder) {
+      faceOccluder.visible = false;
+    }
+    if (headOccluder) {
+      headOccluder.visible = false;
+    }
+    maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+    return false;
+  }
+
   if (!maskOverlayModel || landmarks.length <= 454) {
     if (faceOccluder) {
       faceOccluder.visible = false;
@@ -1216,7 +1387,7 @@ function trackFaceFrame() {
         const landmarks = result.faceLandmarks?.[0];
         if (landmarks && updateMaskOverlay(landmarks)) {
           if (lastFaceDetected !== true) {
-            cameraMessage.textContent = "Face detected — mask overlay active.";
+            cameraMessage.textContent = "Face detected — gas mask overlay active.";
             lastFaceDetected = true;
           }
         } else {
@@ -1230,9 +1401,13 @@ function trackFaceFrame() {
             }
             maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
           }
-          const status = landmarks
-            ? "Face detected. Move closer to position the mask."
-            : "No face detected. Face the camera to see the mask overlay.";
+          const status = !isRespiratorActive()
+            ? (landmarks
+                ? "Face detected. Toggle 'Respirator' in PPE checklist to wear gas mask."
+                : "No face detected. Select 'Respirator' in PPE checklist to test gas mask.")
+            : (landmarks
+                ? "Face detected. Move closer to position the mask."
+                : "No face detected. Face the camera to see the gas mask overlay.");
           if (lastFaceDetected !== false || cameraMessage.textContent !== status) {
             cameraMessage.textContent = status;
             lastFaceDetected = false;

@@ -65,8 +65,8 @@ export default defineConfig({
 
           if (requestPath === "/api/recordings") {
             if (request.method !== "POST") {
-              response.writeHead(405, { Allow: "POST" });
-              response.end("Only POST is supported.");
+              response.writeHead(405, { "Content-Type": "application/json", Allow: "POST" });
+              response.end(JSON.stringify({ error: "Only POST is supported." }));
               return;
             }
 
@@ -74,33 +74,36 @@ export default defineConfig({
             if (origin) {
               try {
                 if (new URL(origin).host !== request.headers.host) {
-                  response.writeHead(403);
-                  response.end("Cross-origin recording uploads are not allowed.");
+                  response.writeHead(403, { "Content-Type": "application/json" });
+                  response.end(JSON.stringify({ error: "Cross-origin recording uploads are not allowed." }));
                   return;
                 }
               } catch {
-                response.writeHead(403);
-                response.end("Invalid request origin.");
+                response.writeHead(403, { "Content-Type": "application/json" });
+                response.end(JSON.stringify({ error: "Invalid request origin." }));
                 return;
               }
             }
 
             const contentType = request.headers["content-type"] || "";
-            if (!contentType.toLowerCase().startsWith("video/webm")) {
-              response.writeHead(415);
-              response.end("Only WebM video recordings are supported.");
+            const isWebm = contentType.toLowerCase().includes("webm");
+            const isMp4 = contentType.toLowerCase().includes("mp4");
+            if (!isWebm && !isMp4) {
+              response.writeHead(415, { "Content-Type": "application/json" });
+              response.end(JSON.stringify({ error: "Only WebM and MP4 video recordings are supported." }));
               return;
             }
 
             const contentLength = Number(request.headers["content-length"]);
-            if (contentLength > maxRecordingBytes) {
-              response.writeHead(413);
-              response.end("Recording exceeds the 250 MB limit.");
+            if (Number.isFinite(contentLength) && contentLength > maxRecordingBytes) {
+              response.writeHead(413, { "Content-Type": "application/json" });
+              response.end(JSON.stringify({ error: "Recording exceeds the 250 MB limit." }));
               return;
             }
 
+            const ext = isMp4 ? "mp4" : "webm";
             const filename =
-              `safety_mirror_${new Date().toISOString().replace(/[:.]/g, "-")}_${randomUUID()}.webm`;
+              `safety_mirror_${new Date().toISOString().replace(/[:.]/g, "-")}_${randomUUID()}.${ext}`;
             const temporaryPath = resolve(recordingsDirectory, `.${filename}.part`);
             const recordingPath = resolve(recordingsDirectory, filename);
             let bytesWritten = 0;
@@ -138,13 +141,13 @@ export default defineConfig({
                 }
 
                 if (error.code === "LIMIT_EXCEEDED" || bytesWritten > maxRecordingBytes) {
-                  response.writeHead(413);
-                  response.end("Recording exceeds the 250 MB limit.");
+                  response.writeHead(413, { "Content-Type": "application/json" });
+                  response.end(JSON.stringify({ error: "Recording exceeds the 250 MB limit." }));
                   return;
                 }
                 console.error("Could not save browser recording.", error);
-                response.writeHead(500);
-                response.end("Could not save the recording.");
+                response.writeHead(500, { "Content-Type": "application/json" });
+                response.end(JSON.stringify({ error: `Could not save the recording: ${error.message}` }));
               }
             })();
             return;

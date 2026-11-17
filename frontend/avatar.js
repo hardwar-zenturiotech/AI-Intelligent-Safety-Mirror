@@ -79,6 +79,12 @@ export class Avatar {
     this.lastDetectedBodyHeight = 0;
     this.lastDetectedTorsoHeight = 0;
     this.lastDetectedHeadShoulderHeight = 0;
+    this.lastDetectedDepth = 0;
+    this.calibratedPixelsPerMeter = null;
+    this.calibratedTorsoMeters = 0.50;
+    this.calibratedShoulderMeters = 0.40;
+    this.userScaleMultiplier = 1.0;
+    this.userDepthOffset = 0;
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
     this.calibrationDebugVisible = false;
@@ -287,9 +293,27 @@ export class Avatar {
       return;
     }
     this.tracked = { landmarks, worldLandmarks, video };
+    // Immediately calculate placement and retargeting on tracking update
+    this.placeAvatar();
+  }
+
+  setUserCalibration({ size, depth } = {}) {
+    if (typeof size === "number" && Number.isFinite(size) && size > 0) {
+      this.userScaleMultiplier = size;
+    }
+    if (typeof depth === "number" && Number.isFinite(depth)) {
+      this.userDepthOffset = depth;
+    }
+    if (this.tracked) {
+      this.placeAvatar();
+    }
   }
 
   resetCalibration() {
+    this.calibratedPixelsPerMeter = null;
+    this.lastDetectedDepth = 0;
+    this.userScaleMultiplier = 1.0;
+    this.userDepthOffset = 0;
     this.retargeter?.reset();
     this.group?.position.set(0, 0, 0);
     this.group?.scale.setScalar(1);
@@ -396,26 +420,103 @@ export class Avatar {
     this.lastDetectedBodyHeight = bodyHeight;
     this.lastDetectedTorsoHeight = torsoHeight;
     this.lastDetectedHeadShoulderHeight = headShoulderHeight;
+
+    // 1. Measure true 3D metric dimensions of the detected human from world landmarks
+    // (these are invariant to body rotation/yaw/pitch in meters)
+    let humanTorsoMeters = 0.50;
+    let humanShoulderMeters = 0.40;
+    const hasWorldShoulders =
+      isLandmarkUsable(worldLandmarks[11]) && isLandmarkUsable(worldLandmarks[12]);
+    const hasWorldHips =
+      isLandmarkUsable(worldLandmarks[23]) && isLandmarkUsable(worldLandmarks[24]);
+
+    if (hasWorldShoulders) {
+      const dx = worldLandmarks[11].x - worldLandmarks[12].x;
+      const dy = worldLandmarks[11].y - worldLandmarks[12].y;
+      const dz = worldLandmarks[11].z - worldLandmarks[12].z;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist > 0.15 && dist < 0.85) {
+        humanShoulderMeters = dist;
+      }
+    }
+    if (hasWorldShoulders && hasWorldHips) {
+      const smX = (worldLandmarks[11].x + worldLandmarks[12].x) * 0.5;
+      const smY = (worldLandmarks[11].y + worldLandmarks[12].y) * 0.5;
+      const smZ = (worldLandmarks[11].z + worldLandmarks[12].z) * 0.5;
+      const hmX = (worldLandmarks[23].x + worldLandmarks[24].x) * 0.5;
+      const hmY = (worldLandmarks[23].y + worldLandmarks[24].y) * 0.5;
+      const hmZ = (worldLandmarks[23].z + worldLandmarks[24].z) * 0.5;
+      const dist = Math.hypot(smX - hmX, smY - hmY, smZ - hmZ);
+      if (dist > 0.2 && dist < 0.9) {
+        humanTorsoMeters = dist;
+      }
+    }
+    this.calibratedTorsoMeters = humanTorsoMeters;
+    this.calibratedShoulderMeters = humanShoulderMeters;
+
+    // 2. Unproject 2D foreshortening using detected torso yaw/pitch so the avatar doesn't collapse when turning
+    const yaw = this.retargeter?.diagnostics.torsoYaw || 0;
+    const pitch = this.retargeter?.diagnostics.torsoPitch || 0;
+    const cosYaw = Math.max(Math.abs(Math.cos(yaw)), 0.35);
+    const cosPitch = Math.max(Math.abs(Math.cos(pitch)), 0.35);
+
+    const unprojectedShoulderWidth = shoulderWidth / cosYaw;
+    const unprojectedTorsoHeight = torsoHeight / cosPitch;
+
+    // 3. Calculate detected human pixel-to-meter scale
+    let pixelsPerMeter = 0;
+    if (unprojectedTorsoHeight > 10) {
+      pixelsPerMeter = unprojectedTorsoHeight / humanTorsoMeters;
+    } else if (unprojectedShoulderWidth > 10) {
+      pixelsPerMeter = unprojectedShoulderWidth / humanShoulderMeters;
+    }
+
+    // 4. Baseline depth auto-calibration
+    if ((!this.calibratedPixelsPerMeter || this.calibratedPixelsPerMeter <= 0) && pixelsPerMeter > 40) {
+      this.calibratedPixelsPerMeter = pixelsPerMeter;
+    }
+
+    // 5. Calculate calibrated depth (Z) according to the detected human
+    const depthRatio =
+      this.calibratedPixelsPerMeter > 0 && pixelsPerMeter > 0
+        ? pixelsPerMeter / this.calibratedPixelsPerMeter
+        : 1.0;
+
+    let targetDepth = 0;
+    if (this.renderMode === "environment") {
+      targetDepth = THREE.MathUtils.clamp(
+        (depthRatio - 1.0) * 1.8 + (this.userDepthOffset / 250),
+        -2.5,
+        2.5,
+      );
+    } else {
+      // In camera mode: camera is at Z = 1000. Moving closer increases Z towards the camera.
+      const clampedRatio = THREE.MathUtils.clamp(depthRatio, 0.4, 2.5);
+      const virtualDistance = 1000 / clampedRatio;
+      targetDepth = THREE.MathUtils.clamp(
+        1000 - virtualDistance + this.userDepthOffset,
+        -500,
+        600,
+      );
+    }
+    this.lastDetectedDepth = targetDepth;
+
+    // 6. Compute calibrated scale (X, Y, Z) matching the detected human's proportions
     const scaleFromShoulders =
-      shoulderWidth > 0 && this.modelShoulderWidth > 0
-        ? shoulderWidth / this.modelShoulderWidth
+      unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0
+        ? unprojectedShoulderWidth / this.modelShoulderWidth
         : 0;
     const scaleFromHips =
       hipWidth > 0 && this.modelHipWidth > 0 ? hipWidth / this.modelHipWidth : 0;
     const widthScale = scaleFromShoulders || scaleFromHips;
-    this.lastHorizontalScaleReference =
-      scaleFromShoulders > 0
-        ? "shoulder width"
-        : scaleFromHips > 0
-          ? "hip width"
-          : "no visible width landmarks";
+
     let scaleY = 0;
     if (bodyHeight > 0 && this.modelHeight > 0) {
       scaleY = bodyHeight / this.modelHeight;
       this.lastScaleReference = "nose-to-ankles";
-    } else if (torsoHeight > 0 && this.modelTorsoHeight > 0.02) {
-      scaleY = torsoHeight / this.modelTorsoHeight;
-      this.lastScaleReference = "shoulder-to-hip height";
+    } else if (unprojectedTorsoHeight > 0 && this.modelTorsoHeight > 0.02) {
+      scaleY = unprojectedTorsoHeight / this.modelTorsoHeight;
+      this.lastScaleReference = "calibrated torso height";
     } else if (headShoulderHeight > 0 && this.modelHeadShoulderHeight > 0.02) {
       scaleY = headShoulderHeight / this.modelHeadShoulderHeight;
       this.lastScaleReference = "nose-to-shoulder height";
@@ -425,32 +526,57 @@ export class Avatar {
         ? "shoulder/hip width"
         : "no visible scale landmarks";
     }
+
+    const humanDetectedShoulderPx =
+      pixelsPerMeter > 0
+        ? pixelsPerMeter * humanShoulderMeters
+        : (unprojectedShoulderWidth || scaleY * this.modelShoulderWidth);
+    let scaleX =
+      humanDetectedShoulderPx > 0 && this.modelShoulderWidth > 0
+        ? humanDetectedShoulderPx / this.modelShoulderWidth
+        : scaleY;
+
+    this.lastHorizontalScaleReference =
+      pixelsPerMeter > 0 ? "calibrated 3D human shoulders" : "unprojected shoulder width";
+
     const hasScaleMeasurement =
       bodyHeight > 0 ||
       torsoHeight > 0 ||
       headShoulderHeight > 0 ||
       widthScale > 0;
-    const scaleX = hasScaleMeasurement
-      ? Math.max(widthScale || scaleY, 20)
-      : this.group.scale.x;
+    scaleX = hasScaleMeasurement ? Math.max(scaleX, 20) : this.group.scale.x;
     scaleY = hasScaleMeasurement ? Math.max(scaleY, 20) : this.group.scale.y;
+
     const visibleHeight =
       this.renderMode === "environment"
         ? 2 * this.camera.position.z * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))
         : 0;
+
     if (hasScaleMeasurement) {
       if (this.renderMode === "environment") {
         const targetScale = THREE.MathUtils.clamp(
-          (scaleY / stage.height) * visibleHeight,
-          0.7,
-          visibleHeight * 1.4,
+          (humanTorsoMeters / 0.50) *
+            (scaleY / stage.height) *
+            visibleHeight *
+            this.userScaleMultiplier,
+          0.4,
+          visibleHeight * 2.5,
         );
         this.scaleTarget.setScalar(targetScale);
       } else {
-        this.scaleTarget.set(scaleX, Math.max(scaleY, 20), scaleX);
+        // Perspective compensation: ensures overlay scale remains visually aligned at depth Z
+        const perspectiveCompensation = Math.max((1000 - targetDepth) / 1000, 0.2);
+        const finalScaleX = scaleX * perspectiveCompensation * this.userScaleMultiplier;
+        const finalScaleY = scaleY * perspectiveCompensation * this.userScaleMultiplier;
+        this.scaleTarget.set(
+          finalScaleX,
+          finalScaleY,
+          finalScaleX,
+        );
       }
-      this.group.scale.lerp(this.scaleTarget, 0.18);
     }
+
+    // 7. Calculate calibrated 3D position
     if (hasHipCenter || hasShoulderCenter) {
       let originX;
       let originY;
@@ -477,14 +603,35 @@ export class Avatar {
         this.positionTarget.set(
           ((originX / stage.width) * 2 - 1) * this.camera.aspect * 1.2,
           (0.5 - originY / stage.height) * 2.4,
-          0,
+          targetDepth,
         );
       } else {
-        this.positionTarget.set(originX - stage.width / 2, stage.height / 2 - originY, 0);
+        this.positionTarget.set(
+          originX - stage.width / 2,
+          stage.height / 2 - originY,
+          targetDepth,
+        );
       }
-      this.group.position.lerp(this.positionTarget, 0.18);
     }
-    this.retargeter.update(landmarks, worldLandmarks, this.frameDelta);
+
+    // 8. Responsive time-based smoothing
+    const delta = Math.min(Math.max(this.frameDelta || 0.016, 0.001), 0.1);
+    let posAlpha = 1 - Math.exp(-32 * delta);
+    let scaleAlpha = 1 - Math.exp(-28 * delta);
+
+    const posDist = this.group.position.distanceTo(this.positionTarget);
+    if (posDist > 25) {
+      posAlpha = Math.min(1.0, posAlpha + 0.35);
+    }
+
+    if (hasScaleMeasurement) {
+      this.group.scale.lerp(this.scaleTarget, scaleAlpha);
+    }
+    if (hasHipCenter || hasShoulderCenter) {
+      this.group.position.lerp(this.positionTarget, posAlpha);
+    }
+
+    this.retargeter.update(landmarks, worldLandmarks, delta);
   }
 
   resize() {

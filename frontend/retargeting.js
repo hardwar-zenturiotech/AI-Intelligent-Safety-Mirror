@@ -277,27 +277,32 @@ export class MotionRetargeter {
     this.tracked = false;
   }
 
-  applyWorldRotation(bone, worldRotation, smoothing) {
+  applyWorldRotation(bone, worldRotation, smoothing = 1.0) {
     this.parentWorld.identity();
     if (bone.parent) {
       bone.parent.getWorldQuaternion(this.parentWorld);
     }
     this.desiredLocal.copy(this.parentWorld).invert().multiply(worldRotation);
-    bone.quaternion.slerp(this.desiredLocal, smoothing);
+    if (smoothing >= 0.999) {
+      bone.quaternion.copy(this.desiredLocal);
+    } else {
+      bone.quaternion.slerp(this.desiredLocal, smoothing);
+    }
     bone.updateMatrixWorld(true);
   }
 
   restoreBone(bone, smoothing) {
     const rest = this.restLocal.get(bone);
     if (rest) {
-      bone.quaternion.slerp(rest, smoothing * 0.55);
+      bone.quaternion.slerp(rest, smoothing * 0.7);
       bone.updateMatrixWorld(true);
     }
   }
 
   update(landmarks, worldLandmarks, deltaSeconds) {
     const delta = Math.min(Math.max(deltaSeconds ?? 0, 0), 0.1);
-    const smoothing = 1 - Math.exp(-12 * delta);
+    // Highly responsive tracking rate (32 rad/s) for fast, natural mocap following MediaPipe
+    const smoothing = delta > 0 ? (1 - Math.exp(-32 * delta)) : 1.0;
     let updated = false;
 
     if (landmarks && worldLandmarks) {
@@ -348,10 +353,10 @@ export class MotionRetargeter {
 
     if (!updated) {
       for (const [bone, quaternion] of this.restLocal) {
-        bone.quaternion.slerp(quaternion, smoothing * 0.55);
+        bone.quaternion.slerp(quaternion, smoothing * 0.7);
       }
-      this.filteredTorsoFrame.slerp(this.restTorsoFrame, smoothing * 0.55);
-      this.headRelativeFiltered.slerp(this.identityQuaternion, smoothing * 0.55);
+      this.filteredTorsoFrame.slerp(this.restTorsoFrame, smoothing * 0.7);
+      this.headRelativeFiltered.slerp(this.identityQuaternion, smoothing * 0.7);
       this.updateTorsoDiagnostics();
     }
     this.tracked = updated;
@@ -448,7 +453,9 @@ export class MotionRetargeter {
       if (!bone || !restWorld) continue;
       this.weightedTorsoDelta.identity().slerp(this.torsoDelta, weight);
       this.desiredWorld.copy(this.weightedTorsoDelta).multiply(restWorld);
-      this.applyWorldRotation(bone, this.desiredWorld, smoothing);
+      // filteredTorsoFrame is already smoothed to eliminate jitter;
+      // apply directly to avoid double-damping latency
+      this.applyWorldRotation(bone, this.desiredWorld, 1.0);
     }
     return true;
   }
@@ -544,7 +551,9 @@ export class MotionRetargeter {
       .copy(this.torsoDelta)
       .multiply(this.headRelativeFiltered)
       .multiply(this.restWorld.get(head));
-    this.applyWorldRotation(head, this.desiredWorld, smoothing);
+    // headRelativeFiltered is already smoothed to eliminate jitter;
+    // apply directly to avoid double-damping latency
+    this.applyWorldRotation(head, this.desiredWorld, 1.0);
     return true;
   }
 

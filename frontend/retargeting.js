@@ -98,15 +98,18 @@ function usablePair(landmarks, from, to) {
     isLandmarkUsable(landmarks[to], CONFIDENCE_THRESHOLD);
 }
 
-// Use one camera-to-avatar convention: +X image-right, +Y up, +Z away to Three.js +Y up and +Z toward camera.
+// Unified camera-to-avatar coordinate conversion:
+// MediaPipe world landmarks: +X person-left, +Y downward (gravity), +Z away from camera.
+// Three.js / Avatar world:   +X avatar-left,  +Y upward,            +Z toward camera (avatar forward).
+// This is a pure 180-degree rotation around the X-axis (det = +1, preserves right-handedness).
 export function convertMediaPipeWorldVector(point, target) {
-  return target.set(point.x, point.y, -point.z);
+  return target.set(point.x, -point.y, -point.z);
 }
 
 const TORSO_ALIGNMENT_WEIGHTS = [
-  ["hips", 0.25],
-  ["spine", 0.6],
-  ["chest", 1],
+  ["hips", 0.35],
+  ["spine", 0.65],
+  ["chest", 1.0],
 ];
 
 export class MotionRetargeter {
@@ -253,8 +256,6 @@ export class MotionRetargeter {
         continue;
       }
       joint.getWorldPosition(to);
-      this.root.worldToLocal(from);
-      this.root.worldToLocal(to);
       this.restDirection.subVectors(to, from);
       if (this.restDirection.lengthSq() > 1e-8) {
         this.directionOffsets.set(role, { local: this.restDirection.clone().normalize() });
@@ -277,29 +278,20 @@ export class MotionRetargeter {
   }
 
   applyWorldRotation(bone, worldRotation, smoothing) {
-    this.desiredLocal.copy(worldRotation);
+    this.parentWorld.identity();
     if (bone.parent) {
-      this.parentWorld.identity();
-      this.parentChain.length = 0;
-      let ancestor = bone.parent;
-      while (ancestor && ancestor !== this.root) {
-        this.parentChain.push(ancestor);
-        ancestor = ancestor.parent;
-      }
-      for (let index = this.parentChain.length - 1; index >= 0; index -= 1) {
-        this.parentWorld.multiply(this.parentChain[index].quaternion);
-      }
-      this.desiredLocal.premultiply(this.parentWorld.invert());
+      bone.parent.getWorldQuaternion(this.parentWorld);
     }
+    this.desiredLocal.copy(this.parentWorld).invert().multiply(worldRotation);
     bone.quaternion.slerp(this.desiredLocal, smoothing);
-    this.root.updateMatrixWorld(true);
+    bone.updateMatrixWorld(true);
   }
 
   restoreBone(bone, smoothing) {
     const rest = this.restLocal.get(bone);
     if (rest) {
       bone.quaternion.slerp(rest, smoothing * 0.55);
-      this.root.updateMatrixWorld(true);
+      bone.updateMatrixWorld(true);
     }
   }
 
@@ -313,9 +305,6 @@ export class MotionRetargeter {
       if (!torsoUpdated) this.restoreTorso(smoothing);
       updated = torsoUpdated || updated;
 
-      this.root.updateMatrixWorld(true);
-      this.rootInverseMatrix.copy(this.root.matrixWorld).invert();
-      this.root.getWorldQuaternion(this.rootWorld);
       for (const [role, start, end] of SEGMENTS) {
         const bone = this.mapping[role];
         if (!bone) {
@@ -338,8 +327,7 @@ export class MotionRetargeter {
           continue;
         }
         convertMediaPipeWorldVector(this.direction, this.direction);
-        // Invert the fitted root transform so camera-mode anisotropic scaling does not skew the target direction.
-        this.direction.transformDirection(this.rootInverseMatrix);
+        this.direction.normalize();
         const restDirections = this.directionOffsets.get(role);
         if (!restDirections) {
           continue;
@@ -347,9 +335,8 @@ export class MotionRetargeter {
 
         this.delta.setFromUnitVectors(restDirections.local, this.direction);
         this.desiredWorld
-          .copy(this.rootWorld)
-          .multiply(this.delta)
-          .multiply(this.restRootWorld.get(bone));
+          .copy(this.delta)
+          .multiply(this.restWorld.get(bone));
         this.applyWorldRotation(bone, this.desiredWorld, smoothing);
         updated = true;
       }
@@ -375,9 +362,7 @@ export class MotionRetargeter {
   updateTorso(worldLandmarks, smoothing) {
     if (
       !isLandmarkUsable(worldLandmarks[11], CONFIDENCE_THRESHOLD) ||
-      !isLandmarkUsable(worldLandmarks[12], CONFIDENCE_THRESHOLD) ||
-      !isLandmarkUsable(worldLandmarks[23], CONFIDENCE_THRESHOLD) ||
-      !isLandmarkUsable(worldLandmarks[24], CONFIDENCE_THRESHOLD)
+      !isLandmarkUsable(worldLandmarks[12], CONFIDENCE_THRESHOLD)
     ) {
       return false;
     }
@@ -386,46 +371,65 @@ export class MotionRetargeter {
     convertMediaPipeWorldVector(worldLandmarks[12], this.rightShoulder);
     this.diagnostics.trackedLeftShoulder.copy(this.leftShoulder);
     this.diagnostics.trackedRightShoulder.copy(this.rightShoulder);
-    convertMediaPipeWorldVector(worldLandmarks[23], this.leftHip);
-    convertMediaPipeWorldVector(worldLandmarks[24], this.rightHip);
-    this.hipCenter.addVectors(this.leftHip, this.rightHip).multiplyScalar(0.5);
-    this.shoulderCenter
-      .addVectors(this.leftShoulder, this.rightShoulder)
-      .multiplyScalar(0.5);
-    this.torsoUp.subVectors(this.shoulderCenter, this.hipCenter);
-    if (this.torsoUp.lengthSq() < 1e-8) {
-      return false;
-    }
-    this.torsoUp.normalize();
 
     this.shoulderLateral.subVectors(this.leftShoulder, this.rightShoulder);
-    this.hipLateral.subVectors(this.leftHip, this.rightHip);
-    if (this.shoulderLateral.lengthSq() < 1e-8 || this.hipLateral.lengthSq() < 1e-8) {
+    if (this.shoulderLateral.lengthSq() < 1e-8) {
       return false;
     }
     this.shoulderLateral.normalize();
-    this.hipLateral.normalize();
-    if (this.shoulderLateral.dot(this.hipLateral) < -0.2) {
-      return false;
+
+    const hasHips =
+      isLandmarkUsable(worldLandmarks[23], CONFIDENCE_THRESHOLD) &&
+      isLandmarkUsable(worldLandmarks[24], CONFIDENCE_THRESHOLD);
+
+    if (hasHips) {
+      convertMediaPipeWorldVector(worldLandmarks[23], this.leftHip);
+      convertMediaPipeWorldVector(worldLandmarks[24], this.rightHip);
+      this.shoulderCenter
+        .addVectors(this.leftShoulder, this.rightShoulder)
+        .multiplyScalar(0.5);
+      this.hipCenter.addVectors(this.leftHip, this.rightHip).multiplyScalar(0.5);
+      this.torsoUp.subVectors(this.shoulderCenter, this.hipCenter);
+      if (this.torsoUp.lengthSq() < 1e-4) {
+        this.torsoUp.set(0, 1, 0);
+      } else {
+        this.torsoUp.normalize();
+      }
+      this.hipLateral.subVectors(this.leftHip, this.rightHip);
+      if (this.hipLateral.lengthSq() > 1e-8) {
+        this.hipLateral.normalize();
+        if (this.shoulderLateral.dot(this.hipLateral) > 0.0) {
+          this.torsoLateral.addVectors(this.shoulderLateral, this.hipLateral).normalize();
+        } else {
+          this.torsoLateral.copy(this.shoulderLateral);
+        }
+      } else {
+        this.torsoLateral.copy(this.shoulderLateral);
+      }
+    } else {
+      this.torsoUp.set(0, 1, 0);
+      this.torsoLateral.copy(this.shoulderLateral);
     }
-    this.torsoLateral
-      .addVectors(this.shoulderLateral, this.hipLateral)
-      .projectOnPlane(this.torsoUp);
-    if (this.torsoLateral.lengthSq() < 0.05) {
-      this.torsoLateral.copy(this.shoulderLateral).projectOnPlane(this.torsoUp);
+
+    this.torsoLateral.projectOnPlane(this.torsoUp);
+    if (this.torsoLateral.lengthSq() < 1e-4) {
+      this.torsoLateral.copy(this.shoulderLateral).projectOnPlane(new THREE.Vector3(0, 1, 0));
     }
     if (this.torsoLateral.lengthSq() < 1e-8) {
       return false;
     }
     this.torsoLateral.normalize();
+
     this.torsoForward.crossVectors(this.torsoLateral, this.torsoUp);
     if (this.torsoForward.lengthSq() < 1e-8) {
       return false;
     }
     this.torsoForward.normalize();
+
     this.frameUp.crossVectors(this.torsoForward, this.torsoLateral).normalize();
     this.torsoFrameMatrix.makeBasis(this.torsoLateral, this.frameUp, this.torsoForward);
     this.measuredTorsoFrame.setFromRotationMatrix(this.torsoFrameMatrix);
+
     if (this.filteredTorsoFrame.dot(this.measuredTorsoFrame) < 0) {
       this.measuredTorsoFrame.set(
         -this.measuredTorsoFrame.x,
@@ -487,24 +491,32 @@ export class MotionRetargeter {
     convertMediaPipeWorldVector(worldLandmarks[7], this.leftEar);
     convertMediaPipeWorldVector(worldLandmarks[8], this.rightEar);
     convertMediaPipeWorldVector(worldLandmarks[0], this.nose);
+
+    const earCenterX = (this.leftEar.x + this.rightEar.x) * 0.5;
+    const earCenterY = (this.leftEar.y + this.rightEar.y) * 0.5;
+    const earCenterZ = (this.leftEar.z + this.rightEar.z) * 0.5;
+
     this.faceLateral.subVectors(this.leftEar, this.rightEar);
-    this.faceForward
-      .subVectors(
-        this.nose,
-        this.leftEar.add(this.rightEar).multiplyScalar(0.5),
-      )
-      .projectOnPlane(this.faceLateral);
-    if (
-      this.faceLateral.lengthSq() < 1e-8 ||
-      this.faceForward.lengthSq() < 1e-8
-    ) {
+    if (this.faceLateral.lengthSq() < 1e-8) {
       return false;
     }
     this.faceLateral.normalize();
+
+    this.faceForward
+      .set(
+        this.nose.x - earCenterX,
+        this.nose.y - earCenterY,
+        this.nose.z - earCenterZ,
+      )
+      .projectOnPlane(this.faceLateral);
+    if (this.faceForward.lengthSq() < 1e-8) {
+      return false;
+    }
     this.faceForward.normalize();
+
     this.faceUp.crossVectors(this.faceForward, this.faceLateral).normalize();
-    this.faceLateral.crossVectors(this.faceUp, this.faceForward).normalize();
-    this.headFrameMatrix.makeBasis(this.faceLateral, this.faceUp, this.faceForward);
+    const finalFaceLateral = this.faceLateral.crossVectors(this.faceUp, this.faceForward).normalize();
+    this.headFrameMatrix.makeBasis(finalFaceLateral, this.faceUp, this.faceForward);
     this.measuredHeadFrame.setFromRotationMatrix(this.headFrameMatrix);
     this.headRelativeTarget
       .copy(this.filteredTorsoFrame)
@@ -530,8 +542,8 @@ export class MotionRetargeter {
 
     this.desiredWorld
       .copy(this.torsoDelta)
-      .multiply(this.restWorld.get(head))
-      .multiply(this.headRelativeFiltered);
+      .multiply(this.headRelativeFiltered)
+      .multiply(this.restWorld.get(head));
     this.applyWorldRotation(head, this.desiredWorld, smoothing);
     return true;
   }

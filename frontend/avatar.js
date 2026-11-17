@@ -266,6 +266,8 @@ export class Avatar {
     for (const role of [
       "leftForearm",
       "rightForearm",
+      "leftHand",
+      "rightHand",
       "hips",
       "leftUpperLeg",
       "leftLeg",

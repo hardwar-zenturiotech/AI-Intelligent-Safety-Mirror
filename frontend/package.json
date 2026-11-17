@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --config vite.config.js",
     "build": "vite --config vite.config.js build",
+    "test": "node test_retargeting.mjs",
     "preview": "vite --config vite.config.js preview"
   },
   "dependencies": {

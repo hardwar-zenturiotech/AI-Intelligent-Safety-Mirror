@@ -520,14 +520,17 @@ function drawPoseDebug(landmarks, video = cameraPreview) {
       };
       drawAxis(diagnostics.torsoUp, "Torso up", "#c5f36b");
       drawAxis(diagnostics.torsoForward, "Torso forward", "#f7e36d");
+      drawAxis(diagnostics.headForward, "Head forward", "#66e7ff");
     }
 
     const avatarPoints = avatar.getDebugBonePoints(rect);
     const comparisons = [
       ["leftShoulder", 11, "L shoulder", "#66e7ff"],
       ["leftForearm", 13, "L elbow", "#66e7ff"],
+      ["leftHand", 15, "L wrist", "#66e7ff"],
       ["rightShoulder", 12, "R shoulder", "#ffae75"],
       ["rightForearm", 14, "R elbow", "#ffae75"],
+      ["rightHand", 16, "R wrist", "#ffae75"],
       ["hips", null, "hips", "#c5f36b"],
       ["leftUpperLeg", 23, "L hip", "#66e7ff"],
       ["leftLeg", 25, "L knee", "#66e7ff"],

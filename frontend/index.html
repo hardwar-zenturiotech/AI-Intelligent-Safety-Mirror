@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="AI Intelligent Safety Mirror with browser-based face tracking and PPE visualization."
+    />
+    <title>Safety Mirror | Zenturio</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./main.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Zenturio Safety Mirror home">
+          <span class="brand-mark" aria-hidden="true">Z</span>
+          <span class="brand-copy">
+            <strong>ZENTURIO</strong>
+            <span>INTELLIGENT SAFETY</span>
+          </span>
+        </a>
+        <div class="topbar-meta">
+          <span class="system-indicator"><span></span> SYSTEM READY</span>
+          <span class="topbar-divider" aria-hidden="true"></span>
+          <span class="topbar-date" id="currentDate"></span>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <section class="page-heading" aria-labelledby="pageTitle">
+          <div>
+            <p class="eyebrow">PERSONAL PROTECTIVE EQUIPMENT</p>
+            <h1 id="pageTitle">Safety mirror</h1>
+            <p class="page-description">
+              A browser-based safety mirror with face tracking and 3D PPE visualization.
+            </p>
+          </div>
+          <span class="session-badge"><span></span> READY TO BEGIN</span>
+        </section>
+
+        <div class="workspace">
+          <section class="preview-panel panel" aria-labelledby="previewTitle">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">CAMERA FEED</p>
+                <h2 id="previewTitle">Live preview</h2>
+              </div>
+              <span class="feed-status" id="feedStatus">
+                <span></span>
+                CAMERA OFF
+              </span>
+            </div>
+
+            <div class="camera-stage" id="cameraStage">
+              <video id="cameraPreview" autoplay muted playsinline hidden></video>
+              <div
+                class="mask-overlay"
+                id="maskOverlay"
+                role="img"
+                aria-label="Face-tracked SCBA mask overlay"
+                hidden
+              ></div>
+              <canvas id="poseDebugCanvas" class="pose-debug-canvas" hidden></canvas>
+              <div class="camera-placeholder" id="cameraPlaceholder">
+                <div class="camera-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48" fill="none">
+                    <rect x="5" y="12" width="27" height="24" rx="4"></rect>
+                    <path d="m32 20 11-6v20l-11-6"></path>
+                    <path d="M17 20v8m-4-4h8"></path>
+                  </svg>
+                </div>
+                <h3>Camera preview is off</h3>
+                <p>Start your camera to see the live preview here.</p>
+              </div>
+              <span class="preview-caption">LOCAL CAMERA PREVIEW</span>
+            </div>
+
+            <label class="mode-control" for="renderMode">
+              <span>Rendering mode</span>
+              <select id="renderMode">
+                <option value="camera">Live camera + avatar</option>
+                <option value="environment">3D environment</option>
+              </select>
+            </label>
+
+            <div class="preview-controls">
+              <div class="preview-messages">
+                <p id="cameraMessage" role="status" aria-live="polite">
+                  Camera and face tracking run locally in this browser.
+                </p>
+                <p id="recordingMessage" role="status" aria-live="polite">
+                  Start the camera to record a clip to recordings/.
+                </p>
+              </div>
+              <div class="preview-actions">
+                <button class="camera-button" id="cameraToggle" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <rect x="2.5" y="5" width="11" height="10" rx="2"></rect>
+                    <path d="m13.5 8 4-2v8l-4-2"></path>
+                  </svg>
+                  <span>Start camera</span>
+                </button>
+                <button class="record-button" id="recordToggle" type="button" disabled>
+                  Record clip
+                </button>
+              </div>
+            </div>
+
+            <details class="debug-controls" open>
+              <summary>Motion capture diagnostics</summary>
+              <div class="debug-options">
+                <label><input id="showPoseSkeleton" type="checkbox" /> Show MediaPipe skeleton</label>
+                <label><input id="showAvatarSkeleton" type="checkbox" /> Show avatar skeleton</label>
+                <label><input id="showJointPositions" type="checkbox" /> Show joint positions</label>
+                <label><input id="syntheticPoseInput" type="checkbox" /> Synthetic motion test (debug only)</label>
+                <label><input id="showRetargetingDebug" type="checkbox" /> Show retargeting calibration</label>
+                <span id="poseFps">FPS: --</span>
+                <span id="poseConfidence">Tracking: --</span>
+              </div>
+              <p id="poseStatus" class="tracking-status" data-state="idle" role="status" aria-live="polite">
+                Pose tracking will start with the camera.
+              </p>
+              <p id="boneReport" role="status" aria-live="polite">
+                Avatar rig inspection will appear here.
+              </p>
+              <p id="retargetingReadout" class="retargeting-readout" hidden></p>
+              <button class="reset-button" id="resetAvatarCalibration" type="button">
+                Reset avatar calibration
+              </button>
+            </details>
+
+            <section class="calibration-controls" aria-labelledby="calibrationTitle">
+              <div class="calibration-heading">
+                <div>
+                  <p class="eyebrow">OVERLAY ALIGNMENT</p>
+                  <h3 id="calibrationTitle">Calibrate mask</h3>
+                </div>
+                <button class="reset-button" id="resetCalibration" type="button">
+                  Reset
+                </button>
+              </div>
+              <div class="calibration-grid">
+                <label class="calibration-slider" for="maskSize">
+                  <span class="calibration-label">
+                    <span>Size</span>
+                    <output id="maskSizeValue" for="maskSize">82%</output>
+                  </span>
+                  <input id="maskSize" type="range" min="25" max="200" value="82" />
+                </label>
+                <label class="calibration-slider" for="maskOffsetX">
+                  <span class="calibration-label">
+                    <span>Horizontal offset</span>
+                    <output id="maskOffsetXValue" for="maskOffsetX">0 px</output>
+                  </span>
+                  <input
+                    id="maskOffsetX"
+                    type="range"
+                    min="-300"
+                    max="300"
+                    value="0"
+                  />
+                </label>
+                <label class="calibration-slider" for="maskOffsetY">
+                  <span class="calibration-label">
+                    <span>Vertical offset</span>
+                    <output id="maskOffsetYValue" for="maskOffsetY">0 px</output>
+                  </span>
+                  <input
+                    id="maskOffsetY"
+                    type="range"
+                    min="-300"
+                    max="300"
+                    value="0"
+                  />
+                </label>
+                <label class="calibration-slider" for="maskDepth">
+                  <span class="calibration-label">
+                    <span>Depth</span>
+                    <output id="maskDepthValue" for="maskDepth">0 px</output>
+                  </span>
+                  <input
+                    id="maskDepth"
+                    type="range"
+                    min="-500"
+                    max="450"
+                    value="0"
+                  />
+                </label>
+              </div>
+              <p class="calibration-help">
+                Positive offsets move right/down; positive depth moves toward the camera.
+              </p>
+            </section>
+          </section>
+
+          <aside class="equipment-panel panel" aria-labelledby="equipmentTitle">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">SESSION SETUP</p>
+                <h2 id="equipmentTitle">PPE checklist</h2>
+              </div>
+              <span class="check-count" id="checkCount">0 / 4</span>
+            </div>
+
+            <p class="equipment-intro">
+              Select the equipment you are wearing for this session.
+            </p>
+
+            <div class="equipment-list" role="group" aria-label="PPE items">
+              <button class="equipment-item" type="button" aria-pressed="false">
+                <span class="equipment-icon" aria-hidden="true">H</span>
+                <span class="equipment-copy">
+                  <strong>Safety helmet</strong>
+                  <span>Head protection</span>
+                </span>
+                <span class="equipment-check" aria-hidden="true"></span>
+              </button>
+              <button class="equipment-item" type="button" aria-pressed="false">
+                <span class="equipment-icon" aria-hidden="true">V</span>
+                <span class="equipment-copy">
+                  <strong>High-visibility vest</strong>
+                  <span>Body protection</span>
+                </span>
+                <span class="equipment-check" aria-hidden="true"></span>
+              </button>
+              <button class="equipment-item" type="button" aria-pressed="false">
+                <span class="equipment-icon" aria-hidden="true">G</span>
+                <span class="equipment-copy">
+                  <strong>Protective gloves</strong>
+                  <span>Hand protection</span>
+                </span>
+                <span class="equipment-check" aria-hidden="true"></span>
+              </button>
+              <button class="equipment-item" type="button" aria-pressed="false">
+                <span class="equipment-icon" aria-hidden="true">R</span>
+                <span class="equipment-copy">
+                  <strong>Respirator</strong>
+                  <span>Respiratory protection</span>
+                </span>
+                <span class="equipment-check" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <div class="notice">
+              <span class="notice-icon" aria-hidden="true">i</span>
+              <p>
+                Face tracking runs locally in the browser and positions the SCBA
+                mask over the detected face.
+              </p>
+            </div>
+          </aside>
+        </div>
+
+        <section class="model-panel panel" aria-labelledby="modelTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">3D ASSET</p>
+              <h2 id="modelTitle">SCBA mask model</h2>
+            </div>
+            <span class="model-status" id="modelStatus" role="status" aria-live="polite">
+              LOADING MODEL
+            </span>
+          </div>
+          <div class="model-stage" id="modelViewer">
+            <p class="model-placeholder" id="modelMessage">Loading 3D model...</p>
+          </div>
+          <div class="model-controls">
+            <p>Drag to rotate · scroll to zoom</p>
+            <button class="reset-button" id="resetModelView" type="button" disabled>
+              Reset view
+            </button>
+          </div>
+          <p class="model-disclaimer">
+            The FBX is previewed here and positioned over the detected face in the camera view.
+          </p>
+        </section>
+
+        <footer class="page-footer">
+          <span>AI INTELLIGENT SAFETY MIRROR</span>
+          <span>DEMONSTRATION ONLY · NOT A SAFETY CERTIFICATION</span>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

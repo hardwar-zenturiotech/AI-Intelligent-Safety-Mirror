@@ -1,0 +1,1353 @@
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { Avatar } from "./avatar.js";
+import { mapLandmarkToStage, requestCameraStream } from "./camera.js";
+import {
+  PoseTracker,
+  POSE_CONNECTIONS,
+  createSyntheticPose,
+  isLandmarkUsable,
+} from "./poseTracker.js";
+
+const cameraPreview = document.querySelector("#cameraPreview");
+const cameraPlaceholder = document.querySelector("#cameraPlaceholder");
+const cameraStage = document.querySelector("#cameraStage");
+const maskOverlay = document.querySelector("#maskOverlay");
+const cameraToggle = document.querySelector("#cameraToggle");
+const cameraMessage = document.querySelector("#cameraMessage");
+const recordToggle = document.querySelector("#recordToggle");
+const recordingMessage = document.querySelector("#recordingMessage");
+const feedStatus = document.querySelector("#feedStatus");
+const checkCount = document.querySelector("#checkCount");
+const equipmentItems = document.querySelectorAll(".equipment-item");
+const currentDate = document.querySelector("#currentDate");
+const modelViewer = document.querySelector("#modelViewer");
+const modelMessage = document.querySelector("#modelMessage");
+const modelStatus = document.querySelector("#modelStatus");
+const resetModelView = document.querySelector("#resetModelView");
+const maskSizeInput = document.querySelector("#maskSize");
+const maskSizeValue = document.querySelector("#maskSizeValue");
+const maskOffsetXInput = document.querySelector("#maskOffsetX");
+const maskOffsetXValue = document.querySelector("#maskOffsetXValue");
+const maskOffsetYInput = document.querySelector("#maskOffsetY");
+const maskOffsetYValue = document.querySelector("#maskOffsetYValue");
+const maskDepthInput = document.querySelector("#maskDepth");
+const maskDepthValue = document.querySelector("#maskDepthValue");
+const resetCalibration = document.querySelector("#resetCalibration");
+const renderMode = document.querySelector("#renderMode");
+const poseStatus = document.querySelector("#poseStatus");
+const boneReport = document.querySelector("#boneReport");
+const poseFps = document.querySelector("#poseFps");
+const poseConfidence = document.querySelector("#poseConfidence");
+const poseDebugCanvas = document.querySelector("#poseDebugCanvas");
+const showPoseSkeleton = document.querySelector("#showPoseSkeleton");
+const showAvatarSkeleton = document.querySelector("#showAvatarSkeleton");
+const showJointPositions = document.querySelector("#showJointPositions");
+const syntheticPoseInput = document.querySelector("#syntheticPoseInput");
+const showRetargetingDebug = document.querySelector("#showRetargetingDebug");
+const retargetingReadout = document.querySelector("#retargetingReadout");
+const resetAvatarCalibration = document.querySelector("#resetAvatarCalibration");
+
+const OVERLAY_CAMERA_DISTANCE = 600;
+const VIDEO_BACKGROUND_Z = -400;
+const FACE_TESSELATION_INDICES = new Uint16Array(
+  FaceLandmarker.FACE_LANDMARKS_TESSELATION.map((connection) => connection.start),
+);
+const FACE_VERTEX_COUNT = FACE_TESSELATION_INDICES.reduce(
+  (count, index) => Math.max(count, index + 1),
+  0,
+);
+let cameraStream = null;
+let faceLandmarker = null;
+let faceLandmarkerPromise = null;
+let poseTracker = null;
+let poseTrackerPromise = null;
+let maskModelPromise = null;
+let trackingFrameId = null;
+let syntheticFrameId = null;
+let lastVideoTime = -1;
+let lastFaceDetected = null;
+let poseFpsFrameCount = 0;
+let poseFpsStartTime = performance.now();
+let syntheticStartTime = 0;
+let modelCamera;
+let modelControls;
+let maskOverlayRenderer;
+let maskOverlayCamera;
+let maskOverlayScene;
+let maskOverlayModel;
+let faceOccluder;
+let headOccluder;
+let videoTexture = null;
+let videoBackground = null;
+let mediaRecorder = null;
+let recordingChunks = [];
+let recordingSaving = false;
+const syntheticVideo = { videoWidth: 640, videoHeight: 480 };
+const avatar = new Avatar(cameraStage, updateBoneReport);
+avatar.video = cameraPreview;
+const overlayCalibration = { size: 0.82, offsetX: 0, offsetY: 0, depth: 0 };
+
+function setPoseStatus(message, state = "idle") {
+  poseStatus.textContent = message;
+  poseStatus.dataset.state = state;
+}
+
+function setCameraState(isRunning) {
+  cameraPreview.hidden = !isRunning;
+  maskOverlay.hidden = !isRunning;
+  cameraPlaceholder.hidden = isRunning || syntheticPoseInput.checked;
+  feedStatus.classList.toggle("is-live", isRunning);
+  feedStatus.lastChild.textContent = isRunning ? " CAMERA LIVE" : " CAMERA OFF";
+  cameraToggle.querySelector("span").textContent = isRunning
+    ? "Stop camera"
+    : "Start camera";
+  cameraToggle.classList.toggle("is-active", isRunning);
+  updateRecordingControls();
+}
+
+async function startCamera() {
+  cameraToggle.disabled = true;
+  cameraMessage.textContent = "Requesting camera access...";
+
+  try {
+    cameraStream = await requestCameraStream();
+    cameraPreview.srcObject = cameraStream;
+    await cameraPreview.play();
+    setCameraState(true);
+    cameraMessage.textContent = "Loading pose tracking...";
+    lastVideoTime = -1;
+    lastFaceDetected = null;
+    trackingFrameId = requestAnimationFrame(trackFaceFrame);
+    try {
+      poseTracker = await loadPoseTracker();
+      setPoseStatus("Pose Landmarker ready; waiting for a visible person.", "ready");
+    } catch (error) {
+      console.error("Could not start pose tracking.", error);
+      setPoseStatus(`Pose tracking unavailable: ${error.message}`, "error");
+    }
+    void initializeFaceOverlay(cameraStream);
+    updateRecordingControls();
+    recordingMessage.textContent = "Ready to record the camera with its mask overlay.";
+  } catch (error) {
+    if (!cameraStream && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError")) {
+      cameraMessage.textContent =
+        "Camera permission was denied. Allow camera access in your browser settings and try again.";
+    } else if (!cameraStream && (error.name === "NotFoundError" || error.name === "DevicesNotFoundError")) {
+      cameraMessage.textContent = "No camera was found on this device.";
+    } else {
+      console.error("Could not start the camera.", error);
+      stopCamera();
+      cameraMessage.textContent = `Could not start the camera: ${error.message}`;
+    }
+  } finally {
+    cameraToggle.disabled = false;
+  }
+}
+
+async function initializeFaceOverlay(stream) {
+  try {
+    faceLandmarker = await loadFaceLandmarker();
+    if (cameraStream !== stream) {
+      return;
+    }
+    await initializeMaskOverlay();
+    if (cameraStream !== stream) {
+      return;
+    }
+    cameraMessage.textContent = "Camera live. Pose and face tracking are active.";
+    updateRecordingControls();
+  } catch (error) {
+    console.error("Could not start optional face overlay.", error);
+    cameraMessage.textContent = `Camera and pose are live; face overlay unavailable: ${error.message}`;
+  }
+}
+
+function stopCamera() {
+  if (trackingFrameId !== null) {
+    cancelAnimationFrame(trackingFrameId);
+    trackingFrameId = null;
+  }
+  avatar.update(null, null);
+  if (!syntheticPoseInput.checked) {
+    poseConfidence.textContent = "Tracking: --";
+    setPoseStatus("Camera stopped. Start it again for live pose tracking.", "idle");
+  }
+  if (mediaRecorder?.state === "recording") {
+    mediaRecorder.stop();
+  }
+  if (cameraStream) {
+    cameraStream.getTracks().forEach((track) => track.stop());
+    cameraStream = null;
+  }
+  cameraPreview.srcObject = null;
+  if (maskOverlayModel) {
+    maskOverlayModel.visible = false;
+  }
+  if (faceOccluder) {
+    faceOccluder.visible = false;
+  }
+  if (headOccluder) {
+    headOccluder.visible = false;
+  }
+  if (videoBackground) {
+    maskOverlayScene.remove(videoBackground);
+    videoBackground.geometry.dispose();
+    videoBackground.material.dispose();
+    videoBackground = null;
+  }
+  videoTexture?.dispose();
+  videoTexture = null;
+  cameraStage.classList.remove("is-ar-active");
+  setCameraState(false);
+  cameraMessage.textContent = "Camera and face tracking run locally in this browser.";
+  if (!recordingSaving) {
+    recordingMessage.textContent = "Start the camera to record a clip to recordings/.";
+  }
+}
+
+cameraToggle.addEventListener("click", () => {
+  if (cameraStream) {
+    stopCamera();
+  } else {
+    startCamera();
+  }
+});
+
+function updateRecordingControls() {
+  const isRecording = mediaRecorder?.state === "recording";
+  const canRecord =
+    Boolean(cameraStream) &&
+    Boolean(maskOverlayRenderer?.domElement.captureStream) &&
+    typeof MediaRecorder !== "undefined" &&
+    !recordingSaving;
+
+  recordToggle.disabled = !isRecording && !canRecord;
+  recordToggle.textContent = recordingSaving
+    ? "Saving clip..."
+    : isRecording
+      ? "Stop and save"
+      : "Record clip";
+  recordToggle.classList.toggle("is-recording", isRecording);
+}
+
+async function saveRecording(blob) {
+  try {
+    const response = await fetch("/api/recordings", {
+      method: "POST",
+      headers: { "Content-Type": blob.type },
+      body: blob,
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(result?.error || `Recording save failed (${response.status}).`);
+    }
+    if (!result?.filename) {
+      throw new Error("Recording server returned no filename.");
+    }
+    recordingMessage.textContent = `Saved to recordings/${result.filename}`;
+  } catch (error) {
+    console.error("Could not save the browser recording.", error);
+    recordingMessage.textContent = `Could not save the clip: ${error.message}`;
+  } finally {
+    recordingSaving = false;
+    cameraToggle.disabled = false;
+    updateRecordingControls();
+  }
+}
+
+function startRecording() {
+  if (!cameraStream || !maskOverlayRenderer) {
+    throw new Error("Start the camera and wait for the mask overlay before recording.");
+  }
+  if (typeof MediaRecorder === "undefined") {
+    throw new Error("This browser does not support video recording.");
+  }
+
+  const mimeType = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ].find((candidate) => MediaRecorder.isTypeSupported(candidate));
+  if (!mimeType) {
+    throw new Error("This browser does not support WebM video recording.");
+  }
+
+  const recordingStream = maskOverlayRenderer.domElement.captureStream(30);
+  let recorder;
+  try {
+    recorder = new MediaRecorder(recordingStream, { mimeType });
+  } catch (error) {
+    recordingStream.getTracks().forEach((track) => track.stop());
+    throw new Error(`Could not start recording: ${error.message}`);
+  }
+
+  let recordingError = null;
+  mediaRecorder = recorder;
+  recordingChunks = [];
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size > 0) {
+      recordingChunks.push(event.data);
+    }
+  });
+  recorder.addEventListener("error", (event) => {
+    recordingError = event.error || new Error("The browser recorder failed.");
+    console.error("Browser recording failed.", recordingError);
+    recordingMessage.textContent = `Recording failed: ${recordingError.message}`;
+    if (recorder.state === "recording") {
+      recorder.stop();
+    }
+  });
+  recorder.addEventListener("stop", () => {
+    recordingStream.getTracks().forEach((track) => track.stop());
+    mediaRecorder = null;
+    updateRecordingControls();
+
+    if (recordingError) {
+      recordingChunks = [];
+      cameraToggle.disabled = false;
+      return;
+    }
+
+    const blob = new Blob(recordingChunks, { type: recorder.mimeType });
+    recordingChunks = [];
+    if (blob.size === 0) {
+      recordingMessage.textContent = "No video data was captured; the clip was not saved.";
+      cameraToggle.disabled = false;
+      updateRecordingControls();
+      return;
+    }
+
+    recordingSaving = true;
+    cameraToggle.disabled = true;
+    recordingMessage.textContent = "Saving clip to recordings/...";
+    updateRecordingControls();
+    void saveRecording(blob);
+  });
+
+  try {
+    recorder.start(1000);
+  } catch (error) {
+    mediaRecorder = null;
+    recordingStream.getTracks().forEach((track) => track.stop());
+    updateRecordingControls();
+    throw new Error(`Could not start recording: ${error.message}`);
+  }
+
+  cameraToggle.disabled = true;
+  recordingMessage.textContent = "Recording camera and mask overlay...";
+  updateRecordingControls();
+}
+
+recordToggle.addEventListener("click", () => {
+  if (mediaRecorder?.state === "recording") {
+    recordingMessage.textContent = "Finishing clip...";
+    mediaRecorder.stop();
+    return;
+  }
+
+  try {
+    startRecording();
+  } catch (error) {
+    recordingMessage.textContent = error.message;
+    console.error("Could not start the browser recording.", error);
+  }
+});
+
+updateRecordingControls();
+
+function updateCalibration() {
+  overlayCalibration.size = Number(maskSizeInput.value) / 100;
+  overlayCalibration.offsetX = Number(maskOffsetXInput.value);
+  overlayCalibration.offsetY = Number(maskOffsetYInput.value);
+  overlayCalibration.depth = Number(maskDepthInput.value);
+  maskSizeValue.value = `${maskSizeInput.value}%`;
+  maskOffsetXValue.value = `${overlayCalibration.offsetX} px`;
+  maskOffsetYValue.value = `${overlayCalibration.offsetY} px`;
+  maskDepthValue.value = `${overlayCalibration.depth} px`;
+}
+
+[maskSizeInput, maskOffsetXInput, maskOffsetYInput, maskDepthInput].forEach((input) => {
+  input.addEventListener("input", updateCalibration);
+});
+
+resetCalibration.addEventListener("click", () => {
+  maskSizeInput.value = "82";
+  maskOffsetXInput.value = "0";
+  maskOffsetYInput.value = "0";
+  maskDepthInput.value = "0";
+  updateCalibration();
+});
+
+function updateBoneReport(report) {
+  if (report.state === "inspecting") {
+    const detected = report.detected.length ? report.detected.join(", ") : "none";
+    boneReport.textContent =
+      `Detected bones: ${detected}. Mapped: ${report.mapped.join(", ") || "none"}. ` +
+      `Missing: ${report.missing.join(", ") || "none"}. Skinned meshes: ${report.skinnedMeshCount}.`;
+    return;
+  }
+  if (report.state === "ready") {
+    avatar.setDebug({ avatarSkeleton: showAvatarSkeleton.checked });
+    avatar.setCalibrationDebug(showRetargetingDebug.checked);
+    boneReport.textContent =
+      `Detected bones: ${report.detected.join(", ") || "none"}. ` +
+      `Mapped: ${report.mapped.join(", ") || "none"}. ` +
+      `Missing: ${report.missing.join(", ") || "none"}.`;
+    return;
+  }
+  const detected = report.detected?.join(", ") || "none";
+  const mapped = report.mapped?.join(", ") || "none";
+  const missing = report.missing?.join(", ") || "none";
+  boneReport.textContent =
+    `Avatar unavailable: ${report.message} Detected: ${detected}. ` +
+    `Mapped: ${mapped}. Missing: ${missing}.`;
+}
+
+function drawPoseDebug(landmarks, video = cameraPreview) {
+  const showSkeleton = showPoseSkeleton.checked;
+  const showJoints = showJointPositions.checked;
+  const showCalibration = showRetargetingDebug.checked;
+  const mirrorDebug = !cameraStage.classList.contains("is-environment");
+  poseDebugCanvas.hidden = !showSkeleton && !showJoints && !showCalibration;
+  if (poseDebugCanvas.hidden) {
+    return;
+  }
+
+  const rect = cameraStage.getBoundingClientRect();
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.round(rect.width * pixelRatio);
+  const height = Math.round(rect.height * pixelRatio);
+  if (poseDebugCanvas.width !== width || poseDebugCanvas.height !== height) {
+    poseDebugCanvas.width = width;
+    poseDebugCanvas.height = height;
+  }
+  const context = poseDebugCanvas.getContext("2d");
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, rect.width, rect.height);
+  context.lineWidth = 2;
+  context.strokeStyle = "#75e69a";
+  context.fillStyle = "#c5f36b";
+
+  if (showSkeleton) {
+    for (const [from, to] of POSE_CONNECTIONS) {
+      if (!isLandmarkUsable(landmarks[from]) || !isLandmarkUsable(landmarks[to])) {
+        continue;
+      }
+      const start = mapLandmarkToStage(landmarks[from], video, rect, mirrorDebug);
+      const end = mapLandmarkToStage(landmarks[to], video, rect, mirrorDebug);
+      if (!start || !end) {
+        continue;
+      }
+      context.beginPath();
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.stroke();
+    }
+  }
+
+  if (showJoints) {
+    for (const landmark of landmarks) {
+      if (!isLandmarkUsable(landmark)) {
+        continue;
+      }
+      const point = mapLandmarkToStage(landmark, video, rect, mirrorDebug);
+      if (point) {
+        context.beginPath();
+        context.arc(point.x, point.y, 3, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+  }
+
+  if (showCalibration) {
+    const labels = [
+      [11, "L shoulder", "#66e7ff"],
+      [13, "L elbow", "#66e7ff"],
+      [15, "L wrist", "#66e7ff"],
+      [12, "R shoulder", "#ffae75"],
+      [14, "R elbow", "#ffae75"],
+      [16, "R wrist", "#ffae75"],
+    ];
+    context.font = "600 11px Segoe UI, sans-serif";
+    for (const [index, label, color] of labels) {
+      if (!isLandmarkUsable(landmarks[index])) continue;
+      const point = mapLandmarkToStage(landmarks[index], video, rect, mirrorDebug);
+      if (!point) continue;
+      context.fillStyle = color;
+      context.beginPath();
+      context.arc(point.x, point.y, 4, 0, Math.PI * 2);
+      context.fill();
+      context.fillText(label, point.x + 7, point.y - 6);
+    }
+
+    const leftShoulder = isLandmarkUsable(landmarks[11])
+      ? mapLandmarkToStage(landmarks[11], video, rect, mirrorDebug)
+      : null;
+    const rightShoulder = isLandmarkUsable(landmarks[12])
+      ? mapLandmarkToStage(landmarks[12], video, rect, mirrorDebug)
+      : null;
+    const origin = leftShoulder && rightShoulder
+      ? {
+          x: (leftShoulder.x + rightShoulder.x) / 2,
+          y: (leftShoulder.y + rightShoulder.y) / 2,
+        }
+      : null;
+    const diagnostics = avatar.retargeter?.diagnostics;
+    if (origin && diagnostics) {
+      const drawAxis = (vector, label, color) => {
+        const x = mirrorDebug ? -vector.x : vector.x;
+        const y = -vector.y;
+        const length = Math.hypot(x, y);
+        context.strokeStyle = color;
+        context.fillStyle = color;
+        if (length < 0.15) {
+          context.beginPath();
+          context.arc(origin.x + 14, origin.y - 12, 5, 0, Math.PI * 2);
+          context.stroke();
+          context.fillText(`${label} (depth)`, origin.x + 22, origin.y - 10);
+          return;
+        }
+        const endX = origin.x + (x / length) * 48;
+        const endY = origin.y + (y / length) * 48;
+        context.beginPath();
+        context.moveTo(origin.x, origin.y);
+        context.lineTo(endX, endY);
+        context.stroke();
+        context.fillText(label, endX + 4, endY - 4);
+      };
+      drawAxis(diagnostics.torsoUp, "Torso up", "#c5f36b");
+      drawAxis(diagnostics.torsoForward, "Torso forward", "#f7e36d");
+    }
+
+    const avatarPoints = avatar.getDebugBonePoints(rect);
+    const comparisons = [
+      ["leftShoulder", 11, "L shoulder", "#66e7ff"],
+      ["leftForearm", 13, "L elbow", "#66e7ff"],
+      ["rightShoulder", 12, "R shoulder", "#ffae75"],
+      ["rightForearm", 14, "R elbow", "#ffae75"],
+      ["hips", null, "hips", "#c5f36b"],
+      ["leftUpperLeg", 23, "L hip", "#66e7ff"],
+      ["leftLeg", 25, "L knee", "#66e7ff"],
+      ["rightUpperLeg", 24, "R hip", "#ffae75"],
+      ["rightLeg", 26, "R knee", "#ffae75"],
+    ];
+    let totalError = 0;
+    let comparedJoints = 0;
+    const jointOffsets = {};
+    for (const [role, index, label, color] of comparisons) {
+      const avatarPoint = avatarPoints[role];
+      let posePoint = null;
+      if (index === null && isLandmarkUsable(landmarks[23]) && isLandmarkUsable(landmarks[24])) {
+        const leftHip = mapLandmarkToStage(landmarks[23], video, rect, mirrorDebug);
+        const rightHip = mapLandmarkToStage(landmarks[24], video, rect, mirrorDebug);
+        if (leftHip && rightHip) {
+          posePoint = {
+            x: (leftHip.x + rightHip.x) / 2,
+            y: (leftHip.y + rightHip.y) / 2,
+          };
+        }
+      } else if (index !== null && isLandmarkUsable(landmarks[index])) {
+        posePoint = mapLandmarkToStage(landmarks[index], video, rect, mirrorDebug);
+      }
+      if (!avatarPoint || !posePoint) continue;
+
+      const error = Math.hypot(avatarPoint.x - posePoint.x, avatarPoint.y - posePoint.y);
+      totalError += error;
+      comparedJoints += 1;
+      jointOffsets[role] =
+        `${Math.round(avatarPoint.x - posePoint.x)},${Math.round(avatarPoint.y - posePoint.y)}`;
+      context.strokeStyle = color;
+      context.globalAlpha = 0.65;
+      context.beginPath();
+      context.moveTo(posePoint.x, posePoint.y);
+      context.lineTo(avatarPoint.x, avatarPoint.y);
+      context.stroke();
+      context.globalAlpha = 1;
+      context.strokeStyle = color;
+      context.beginPath();
+      context.arc(avatarPoint.x, avatarPoint.y, 5, 0, Math.PI * 2);
+      context.stroke();
+      context.fillStyle = color;
+      context.fillText(`avatar ${label}`, avatarPoint.x + 7, avatarPoint.y + 12);
+    }
+    avatar.lastJointErrorPx = comparedJoints ? totalError / comparedJoints : null;
+    avatar.lastJointOffsets = jointOffsets;
+  }
+}
+
+function updateRetargetingReadout() {
+  retargetingReadout.hidden = !showRetargetingDebug.checked;
+  if (!showRetargetingDebug.checked) return;
+  const diagnostics = avatar.retargeter?.diagnostics;
+  if (!diagnostics) {
+    retargetingReadout.textContent = "Waiting for the avatar rig to load.";
+    return;
+  }
+  const degrees = (radians) => Math.round(THREE.MathUtils.radToDeg(radians));
+  const vector = (value) =>
+    `${value.x.toFixed(2)}, ${value.y.toFixed(2)}, ${value.z.toFixed(2)}`;
+  retargetingReadout.textContent =
+    `Torso yaw/pitch/roll: ${degrees(diagnostics.torsoYaw)}° / ` +
+    `${degrees(diagnostics.torsoPitch)}° / ${degrees(diagnostics.torsoRoll)}°. ` +
+    `Head relative yaw/pitch/roll: ${degrees(diagnostics.headYaw)}° / ` +
+    `${degrees(diagnostics.headPitch)}° / ${degrees(diagnostics.headRoll)}°. ` +
+    `Torso forward ${vector(diagnostics.torsoForward)}, up ${vector(diagnostics.torsoUp)}; ` +
+    `tracked L/R shoulders ${vector(diagnostics.trackedLeftShoulder)} / ${vector(diagnostics.trackedRightShoulder)}; ` +
+    `model forward ${vector(diagnostics.modelForward)}, head forward ${vector(diagnostics.headForward)}. ` +
+    `Scale refs x/y: ${avatar.lastHorizontalScaleReference} / ${avatar.lastScaleReference}; ` +
+    `avatar shoulder/hip widths ${avatar.modelShoulderWidth.toFixed(3)} / ${avatar.modelHipWidth.toFixed(3)} ` +
+    `(${avatar.modelShoulderAnchors}), detected shoulder width ${avatar.lastDetectedShoulderWidth.toFixed(1)} px, ` +
+    `body/torso/head-shoulder heights ${avatar.lastDetectedBodyHeight.toFixed(1)} / ` +
+    `${avatar.lastDetectedTorsoHeight.toFixed(1)} / ${avatar.lastDetectedHeadShoulderHeight.toFixed(1)} px, ` +
+    `model torso/head-shoulder ${avatar.modelTorsoHeight.toFixed(3)} / ` +
+    `${avatar.modelHeadShoulderHeight.toFixed(3)}, scale x/y ${avatar.group.scale.x.toFixed(1)} / ` +
+    `${avatar.group.scale.y.toFixed(1)} (target ${avatar.scaleTarget.x.toFixed(1)} / ` +
+    `${avatar.scaleTarget.y.toFixed(1)}); ` +
+    `mean joint offset ${avatar.lastJointErrorPx?.toFixed(1) ?? "--"} px; offsets ` +
+    `${Object.entries(avatar.lastJointOffsets).map(([role, error]) => `${role}:${error}`).join(", ") || "--"} px.`;
+}
+
+function recordPoseFrame(now, source) {
+  poseFpsFrameCount += 1;
+  const elapsed = now - poseFpsStartTime;
+  if (elapsed < 1000) {
+    return;
+  }
+  const inferenceFps = Math.round((poseFpsFrameCount * 1000) / elapsed);
+  poseFps.textContent = `FPS: ${inferenceFps} ${source} / ${avatar.fps || "--"} render`;
+  poseFpsFrameCount = 0;
+  poseFpsStartTime = now;
+}
+
+function updatePoseFrame() {
+  if (syntheticPoseInput.checked) {
+    return;
+  }
+  if (!poseTracker || cameraPreview.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    avatar.update(null, null);
+    return;
+  }
+  try {
+    const now = performance.now();
+    const pose = poseTracker.detect(cameraPreview, now);
+    recordPoseFrame(now, "pose");
+    avatar.update(pose.landmarks, pose.worldLandmarks, cameraPreview);
+    updateRetargetingReadout();
+    const landmarks = pose.landmarks;
+    if (!landmarks || !pose.worldLandmarks) {
+      drawPoseDebug([]);
+      poseConfidence.textContent = "Tracking: 0%";
+      setPoseStatus("No pose detected. Stand back so your body is visible.", "lost");
+      return;
+    }
+
+    drawPoseDebug(landmarks);
+    const trackedIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+    const visible = trackedIndices.filter((index) =>
+      isLandmarkUsable(landmarks[index]),
+    );
+    const confidence = visible.length / trackedIndices.length;
+    const meanConfidence = visible.length
+      ? visible.reduce(
+          (sum, index) =>
+            sum +
+            (landmarks[index].visibility ?? landmarks[index].presence ?? 1),
+          0,
+        ) / visible.length
+      : 0;
+    poseConfidence.textContent =
+      `Tracking: ${Math.round(confidence * 100)}% coverage · ` +
+      `${Math.round(meanConfidence * 100)}% confidence`;
+    if (visible.length < 10) {
+      setPoseStatus(
+        "Partial pose detected. Keep more of your body in frame; visible joints still animate.",
+        "partial",
+      );
+    } else if (avatar.retargeter) {
+      setPoseStatus("Live webcam pose is being retargeted to the avatar.", "tracking");
+    } else {
+      setPoseStatus("Pose detected; a usable rigged humanoid GLB is required to animate.", "tracking");
+    }
+  } catch (error) {
+    console.error("Pose tracking failed.", error);
+    setPoseStatus(`Pose tracking stopped: ${error.message}`, "error");
+    const failedTracker = poseTracker;
+    poseTracker = null;
+    poseTrackerPromise = null;
+    try {
+      failedTracker.close();
+    } catch (closeError) {
+      console.error("Could not release the failed pose tracker.", closeError);
+    }
+    avatar.update(null, null);
+  }
+}
+
+function updateSyntheticPoseFrame(timestamp) {
+  if (!syntheticPoseInput.checked) {
+    syntheticFrameId = null;
+    return;
+  }
+  const pose = createSyntheticPose(timestamp - syntheticStartTime);
+  avatar.update(pose.landmarks, pose.worldLandmarks, syntheticVideo);
+  updateRetargetingReadout();
+  drawPoseDebug(pose.landmarks || [], syntheticVideo);
+  recordPoseFrame(performance.now(), "synthetic");
+  if (pose.landmarks) {
+    const trackedIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+    const visibleCount = trackedIndices.filter((index) =>
+      isLandmarkUsable(pose.landmarks[index]),
+    ).length;
+    poseConfidence.textContent = `Synthetic coverage: ${Math.round(
+      (visibleCount / trackedIndices.length) * 100,
+    )}%`;
+    setPoseStatus(
+      `Synthetic debug only: ${pose.phase}; no webcam pose is being verified.`,
+      "synthetic",
+    );
+  } else {
+    poseConfidence.textContent = "Synthetic tracking: 0%";
+    setPoseStatus(
+      `Synthetic debug only: ${pose.phase}; avatar is easing to rest.`,
+      "synthetic",
+    );
+  }
+  syntheticFrameId = requestAnimationFrame(updateSyntheticPoseFrame);
+}
+
+function loadPoseTracker() {
+  if (!poseTrackerPromise) {
+    poseTrackerPromise = PoseTracker.create().catch((error) => {
+      poseTrackerPromise = null;
+      throw error;
+    });
+  }
+  return poseTrackerPromise;
+}
+
+[showPoseSkeleton, showJointPositions].forEach((input) => {
+  input.addEventListener("change", () => {
+    if (!input.checked) {
+      drawPoseDebug([]);
+    }
+  });
+});
+
+syntheticPoseInput.addEventListener("change", () => {
+  poseFpsFrameCount = 0;
+  poseFpsStartTime = performance.now();
+  if (syntheticPoseInput.checked) {
+    cameraPlaceholder.hidden = true;
+    cameraMessage.textContent = "Synthetic motion test active; this is not live webcam tracking.";
+    syntheticStartTime = performance.now();
+    syntheticFrameId = requestAnimationFrame(updateSyntheticPoseFrame);
+    return;
+  }
+  if (syntheticFrameId !== null) {
+    cancelAnimationFrame(syntheticFrameId);
+    syntheticFrameId = null;
+  }
+  avatar.update(null, null);
+  drawPoseDebug([]);
+  poseConfidence.textContent = "Tracking: --";
+  cameraMessage.textContent = cameraStream
+    ? "Synthetic motion test stopped; live camera remains available."
+    : "Camera and face tracking run locally in this browser.";
+  setPoseStatus(
+    cameraStream
+      ? "Synthetic test stopped; waiting for live webcam pose."
+      : "Synthetic test stopped. Start the camera for live pose tracking.",
+    cameraStream ? "ready" : "idle",
+  );
+  cameraPlaceholder.hidden = Boolean(cameraStream);
+});
+
+showAvatarSkeleton.addEventListener("change", () => {
+  avatar.setDebug({ avatarSkeleton: showAvatarSkeleton.checked });
+});
+
+showRetargetingDebug.addEventListener("change", () => {
+  avatar.setCalibrationDebug(showRetargetingDebug.checked);
+  drawPoseDebug([]);
+  updateRetargetingReadout();
+});
+
+renderMode.addEventListener("change", () => {
+  const environmentMode = renderMode.value === "environment";
+  cameraStage.classList.toggle("is-environment", environmentMode);
+  avatar.setRenderMode(environmentMode ? "environment" : "camera");
+});
+
+resetAvatarCalibration.addEventListener("click", () => {
+  avatar.resetCalibration();
+  setPoseStatus("Avatar pose reset; position will be reacquired from tracking.", "ready");
+});
+
+updateCalibration();
+
+equipmentItems.forEach((item) => {
+  item.addEventListener("click", () => {
+    const isSelected = item.getAttribute("aria-pressed") === "true";
+    item.setAttribute("aria-pressed", String(!isSelected));
+
+    const selectedCount = document.querySelectorAll(
+      '.equipment-item[aria-pressed="true"]',
+    ).length;
+    checkCount.textContent = `${selectedCount} / ${equipmentItems.length}`;
+  });
+});
+
+currentDate.textContent = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+}).format(new Date());
+
+function showModelError(message, error) {
+  if (error) {
+    console.error("Could not load the SCBA mask model.", error);
+  }
+  modelStatus.textContent = "MODEL UNAVAILABLE";
+  modelMessage.textContent = message;
+  modelMessage.hidden = false;
+}
+
+function loadMaskModel() {
+  if (!maskModelPromise) {
+    maskModelPromise = new FBXLoader().loadAsync("/models/scba_mask.fbx");
+  }
+  return maskModelPromise;
+}
+
+async function loadFaceLandmarker() {
+  if (!faceLandmarkerPromise) {
+    faceLandmarkerPromise = (async () => {
+      const visionFileset = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
+      return FaceLandmarker.createFromOptions(visionFileset, {
+        baseOptions: { modelAssetPath: "/models/face_landmarker.task" },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        minFaceDetectionConfidence: 0.5,
+        minFacePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+    })();
+  }
+
+  try {
+    return await faceLandmarkerPromise;
+  } catch (error) {
+    faceLandmarkerPromise = null;
+    throw error;
+  }
+}
+
+function updateVideoBackground() {
+  if (!maskOverlayRenderer || !cameraPreview.videoWidth || !cameraPreview.videoHeight) {
+    return;
+  }
+
+  const { width, height } = cameraStage.getBoundingClientRect();
+  if (width === 0 || height === 0) {
+    return;
+  }
+
+  if (!videoTexture) {
+    videoTexture = new THREE.VideoTexture(cameraPreview);
+    videoTexture.colorSpace = THREE.SRGBColorSpace;
+    videoTexture.minFilter = THREE.LinearFilter;
+    videoTexture.magFilter = THREE.LinearFilter;
+    videoTexture.generateMipmaps = false;
+
+    const material = new THREE.MeshBasicMaterial({
+      map: videoTexture,
+      side: THREE.DoubleSide,
+    });
+    videoBackground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+    videoBackground.position.z = VIDEO_BACKGROUND_Z;
+    videoBackground.renderOrder = -1;
+    maskOverlayScene.add(videoBackground);
+  }
+
+  const videoAspect = cameraPreview.videoWidth / cameraPreview.videoHeight;
+  const stageAspect = width / height;
+  const repeatX = videoAspect > stageAspect ? stageAspect / videoAspect : 1;
+  const repeatY = videoAspect < stageAspect ? videoAspect / stageAspect : 1;
+  videoTexture.repeat.set(-repeatX, repeatY);
+  videoTexture.offset.set((1 + repeatX) / 2, (1 - repeatY) / 2);
+
+  const planeDistance = OVERLAY_CAMERA_DISTANCE - VIDEO_BACKGROUND_Z;
+  const planeScale = planeDistance / OVERLAY_CAMERA_DISTANCE;
+  videoBackground.geometry.dispose();
+  videoBackground.geometry = new THREE.PlaneGeometry(
+    width * planeScale,
+    height * planeScale,
+  );
+  cameraStage.classList.add("is-ar-active");
+}
+
+async function initializeMaskOverlay() {
+  if (maskOverlayModel) {
+    updateVideoBackground();
+    return;
+  }
+
+  const model = await loadMaskModel();
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  if (!Number.isFinite(size.x) || size.x <= 0) {
+    throw new Error("The SCBA mask model has no measurable width.");
+  }
+
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  } catch (error) {
+    throw new Error("3D overlay is unavailable in this browser.", { cause: error });
+  }
+
+  const center = bounds.getCenter(new THREE.Vector3());
+  maskOverlayRenderer = renderer;
+  maskOverlayScene = new THREE.Scene();
+  maskOverlayCamera = new THREE.PerspectiveCamera(1, 1, 1, 2000);
+  maskOverlayCamera.position.z = OVERLAY_CAMERA_DISTANCE;
+
+  renderer.setClearColor(0x000000, 0);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  maskOverlay.replaceChildren(renderer.domElement);
+
+  maskOverlayScene.add(new THREE.HemisphereLight(0xffffff, 0x353535, 2.5));
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 3);
+  keyLight.position.set(1, 3, 5);
+  maskOverlayScene.add(keyLight);
+
+  const overlayContent = model.clone(true);
+  overlayContent.position.sub(center);
+  const faceGeometry = new THREE.BufferGeometry();
+  faceGeometry.setIndex(new THREE.BufferAttribute(FACE_TESSELATION_INDICES, 1));
+  faceGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(new Float32Array(FACE_VERTEX_COUNT * 3), 3),
+  );
+  faceOccluder = new THREE.Mesh(
+    faceGeometry,
+    new THREE.MeshBasicMaterial({
+      colorWrite: false,
+      depthWrite: true,
+      side: THREE.DoubleSide,
+    }),
+  );
+  faceOccluder.renderOrder = 0;
+  faceOccluder.frustumCulled = false;
+  faceOccluder.visible = false;
+  maskOverlayScene.add(faceOccluder);
+  // Keep the front mask visible through an opening while hiding the rear harness.
+  const headGeometry = new THREE.SphereGeometry(1, 48, 32);
+  const headPositions = headGeometry.getAttribute("position");
+  const headSourceIndices = headGeometry.index.array;
+  const headIndices = [];
+  for (let index = 0; index < headSourceIndices.length; index += 3) {
+    const triangle = [
+      headSourceIndices[index],
+      headSourceIndices[index + 1],
+      headSourceIndices[index + 2],
+    ];
+    const center = triangle.reduce(
+      (sum, vertexIndex) => sum.add(
+        new THREE.Vector3().fromBufferAttribute(headPositions, vertexIndex),
+      ),
+      new THREE.Vector3(),
+    ).multiplyScalar(1 / 3);
+    const faceOpening =
+      center.z > 0.25 &&
+      Math.abs(center.x) < 0.5 &&
+      center.y < 0.08;
+    if (!faceOpening) {
+      headIndices.push(...triangle);
+    }
+  }
+  headGeometry.setIndex(headIndices);
+  headOccluder = new THREE.Mesh(
+    headGeometry,
+    faceOccluder.material,
+  );
+  headOccluder.renderOrder = 0;
+  headOccluder.frustumCulled = false;
+  headOccluder.visible = false;
+  maskOverlayScene.add(headOccluder);
+
+  maskOverlayModel = new THREE.Group();
+  maskOverlayModel.add(overlayContent);
+  maskOverlayModel.scale.setScalar(1 / size.x);
+  maskOverlayModel.renderOrder = 1;
+  maskOverlayModel.visible = false;
+  maskOverlayScene.add(maskOverlayModel);
+
+  const resizeObserver = new ResizeObserver(() => {
+    const { width, height } = cameraStage.getBoundingClientRect();
+    if (width === 0 || height === 0) {
+      return;
+    }
+
+    maskOverlayCamera.aspect = width / height;
+    maskOverlayCamera.fov =
+      (2 * Math.atan(height / (2 * OVERLAY_CAMERA_DISTANCE)) * 180) / Math.PI;
+    maskOverlayCamera.updateProjectionMatrix();
+    renderer.setSize(width, height, false);
+    updateVideoBackground();
+    renderer.render(maskOverlayScene, maskOverlayCamera);
+  });
+  resizeObserver.observe(cameraStage);
+  updateVideoBackground();
+  renderer.render(maskOverlayScene, maskOverlayCamera);
+}
+
+function mapFaceLandmark(landmark) {
+  const { width, height } = cameraStage.getBoundingClientRect();
+  const scale = Math.max(
+    width / cameraPreview.videoWidth,
+    height / cameraPreview.videoHeight,
+  );
+  const offsetX = (width - cameraPreview.videoWidth * scale) / 2;
+  const offsetY = (height - cameraPreview.videoHeight * scale) / 2;
+
+  return {
+    x: width - (landmark.x * cameraPreview.videoWidth * scale + offsetX),
+    y: landmark.y * cameraPreview.videoHeight * scale + offsetY,
+  };
+}
+
+function updateFaceOccluder(
+  landmarks,
+  stage,
+  targetDepth,
+  targetWidth,
+  cheekWidth,
+  yaw,
+  roll,
+) {
+  const positions = faceOccluder.geometry.getAttribute("position");
+  const videoScale = Math.max(
+    stage.width / cameraPreview.videoWidth,
+    stage.height / cameraPreview.videoHeight,
+  );
+  const cropX = (stage.width - cameraPreview.videoWidth * videoScale) / 2;
+  const cropY = (stage.height - cameraPreview.videoHeight * videoScale) / 2;
+  const depthScale =
+    cameraPreview.videoWidth * videoScale * (targetWidth / cheekWidth);
+
+  for (let index = 0; index < positions.count; index += 1) {
+    const landmark = landmarks[index];
+    if (
+      !landmark ||
+      !Number.isFinite(landmark.x) ||
+      !Number.isFinite(landmark.y) ||
+      !Number.isFinite(landmark.z)
+    ) {
+      faceOccluder.visible = false;
+      headOccluder.visible = false;
+      return false;
+    }
+
+    const screenX =
+      stage.width -
+      (landmark.x * cameraPreview.videoWidth * videoScale + cropX);
+    const screenY =
+      landmark.y * cameraPreview.videoHeight * videoScale + cropY;
+    const depth = targetDepth - landmark.z * depthScale;
+    const perspective = (OVERLAY_CAMERA_DISTANCE - depth) / OVERLAY_CAMERA_DISTANCE;
+    positions.setXYZ(
+      index,
+      (screenX - stage.width / 2) * perspective,
+      (stage.height / 2 - screenY) * perspective,
+      depth,
+    );
+  }
+
+  positions.needsUpdate = true;
+  faceOccluder.visible = true;
+
+  const forehead = mapFaceLandmark(landmarks[10]);
+  const chin = mapFaceLandmark(landmarks[152]);
+  const faceHeight = Math.hypot(chin.x - forehead.x, chin.y - forehead.y);
+  const headCenterX = (forehead.x + chin.x) / 2;
+  const headCenterY = (forehead.y + chin.y) / 2 - faceHeight * 0.12;
+  const headDepth = targetDepth + targetWidth * 0.45;
+  const headPerspective =
+    (OVERLAY_CAMERA_DISTANCE - headDepth) / OVERLAY_CAMERA_DISTANCE;
+  headOccluder.position.set(
+    (headCenterX - stage.width / 2) * headPerspective,
+    (stage.height / 2 - headCenterY) * headPerspective,
+    headDepth,
+  );
+  headOccluder.scale.set(
+    cheekWidth * 0.75 * headPerspective,
+    faceHeight * 0.78 * headPerspective,
+    targetWidth * 0.38,
+  );
+  headOccluder.rotation.set(0, yaw, roll);
+  headOccluder.visible = true;
+  return true;
+}
+
+function updateMaskOverlay(landmarks) {
+  if (!maskOverlayModel || landmarks.length <= 454) {
+    if (faceOccluder) {
+      faceOccluder.visible = false;
+    }
+    if (headOccluder) {
+      headOccluder.visible = false;
+    }
+    return false;
+  }
+
+  const stage = cameraStage.getBoundingClientRect();
+  const leftCheek = mapFaceLandmark(landmarks[234]);
+  const rightCheek = mapFaceLandmark(landmarks[454]);
+  const nose = mapFaceLandmark(landmarks[1]);
+  const mouth = mapFaceLandmark(landmarks[13]);
+  const cheekWidth = Math.hypot(
+    rightCheek.x - leftCheek.x,
+    rightCheek.y - leftCheek.y,
+  );
+
+  if (cheekWidth < 16) {
+    maskOverlayModel.visible = false;
+    faceOccluder.visible = false;
+    headOccluder.visible = false;
+    maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+    return false;
+  }
+
+  const eyeA = mapFaceLandmark(landmarks[33]);
+  const eyeB = mapFaceLandmark(landmarks[263]);
+  const leftEye = eyeA.x < eyeB.x ? eyeA : eyeB;
+  const rightEye = eyeA.x < eyeB.x ? eyeB : eyeA;
+  const screenRoll = Math.atan2(
+    rightEye.y - leftEye.y,
+    rightEye.x - leftEye.x,
+  );
+  // Screen Y points down, opposite to Three.js world Y.
+  const roll = -screenRoll;
+  const faceCenterX = (leftCheek.x + rightCheek.x) / 2;
+  const yaw = THREE.MathUtils.clamp(
+    (nose.x - faceCenterX) / (cheekWidth * 0.55),
+    -0.8,
+    0.8,
+  );
+  const targetWidth = Math.min(
+    cheekWidth * overlayCalibration.size,
+    stage.width * 0.9,
+  );
+  const targetX =
+    nose.x + (mouth.x - nose.x) * 0.45 + overlayCalibration.offsetX;
+  const targetY =
+    nose.y + (mouth.y - nose.y) * 0.45 + overlayCalibration.offsetY;
+  const targetDepth = overlayCalibration.depth;
+  const perspectiveCompensation =
+    (OVERLAY_CAMERA_DISTANCE - targetDepth) / OVERLAY_CAMERA_DISTANCE;
+  if (!updateFaceOccluder(
+    landmarks,
+    stage,
+    targetDepth,
+    targetWidth,
+    cheekWidth,
+    yaw,
+    roll,
+  )) {
+    maskOverlayModel.visible = false;
+    return false;
+  }
+  const targetPosition = new THREE.Vector3(
+    (targetX - stage.width / 2) * perspectiveCompensation,
+    (stage.height / 2 - targetY) * perspectiveCompensation,
+    targetDepth,
+  );
+
+  if (!maskOverlayModel.visible) {
+    maskOverlayModel.position.copy(targetPosition);
+    maskOverlayModel.scale.setScalar(targetWidth);
+    maskOverlayModel.rotation.set(0, yaw, roll);
+  } else {
+    maskOverlayModel.position.lerp(targetPosition, 0.4);
+    const currentWidth = maskOverlayModel.scale.x;
+    maskOverlayModel.scale.setScalar(
+      THREE.MathUtils.lerp(currentWidth, targetWidth, 0.4),
+    );
+    maskOverlayModel.rotation.y = THREE.MathUtils.lerp(
+      maskOverlayModel.rotation.y,
+      yaw,
+      0.4,
+    );
+    maskOverlayModel.rotation.z = THREE.MathUtils.lerp(
+      maskOverlayModel.rotation.z,
+      roll,
+      0.4,
+    );
+  }
+
+  maskOverlayModel.visible = true;
+  maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+  return true;
+}
+
+function trackFaceFrame() {
+  if (!cameraStream) {
+    trackingFrameId = null;
+    return;
+  }
+
+  if (
+    cameraPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    cameraPreview.currentTime !== lastVideoTime
+  ) {
+    lastVideoTime = cameraPreview.currentTime;
+    if (faceLandmarker) {
+      try {
+        const result = faceLandmarker.detectForVideo(cameraPreview, performance.now());
+        const landmarks = result.faceLandmarks?.[0];
+        if (landmarks && updateMaskOverlay(landmarks)) {
+          if (lastFaceDetected !== true) {
+            cameraMessage.textContent = "Face detected — mask overlay active.";
+            lastFaceDetected = true;
+          }
+        } else {
+          if (maskOverlayModel) {
+            maskOverlayModel.visible = false;
+            if (faceOccluder) {
+              faceOccluder.visible = false;
+            }
+            if (headOccluder) {
+              headOccluder.visible = false;
+            }
+            maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+          }
+          const status = landmarks
+            ? "Face detected. Move closer to position the mask."
+            : "No face detected. Face the camera to see the mask overlay.";
+          if (lastFaceDetected !== false || cameraMessage.textContent !== status) {
+            cameraMessage.textContent = status;
+            lastFaceDetected = false;
+          }
+        }
+      } catch (error) {
+        console.error("Face tracking failed; pose tracking will continue.", error);
+        const failedLandmarker = faceLandmarker;
+        faceLandmarker = null;
+        cameraMessage.textContent = `Face overlay unavailable; pose tracking continues: ${error.message}`;
+        try {
+          failedLandmarker.close();
+        } catch (closeError) {
+          console.error("Could not release the failed face landmarker.", closeError);
+        }
+      }
+    }
+    updatePoseFrame();
+  }
+
+  trackingFrameId = requestAnimationFrame(trackFaceFrame);
+}
+
+function initModelViewer() {
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  } catch (error) {
+    showModelError("3D preview is unavailable in this browser.", error);
+    return;
+  }
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color("#141b1c");
+  modelCamera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+  modelCamera.position.set(0, 0, 4);
+
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  modelViewer.replaceChildren(renderer.domElement, modelMessage);
+
+  scene.add(new THREE.HemisphereLight(0xe4f2dc, 0x26302f, 2.2));
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 3);
+  keyLight.position.set(3, 5, 6);
+  scene.add(keyLight);
+
+  const fillLight = new THREE.DirectionalLight(0xc5f36b, 1.2);
+  fillLight.position.set(-4, 1, -3);
+  scene.add(fillLight);
+
+  modelControls = new OrbitControls(modelCamera, renderer.domElement);
+  modelControls.enableDamping = true;
+  modelControls.target.set(0, 0, 0);
+
+  const resizeObserver = new ResizeObserver(() => {
+    const { width, height } = modelViewer.getBoundingClientRect();
+    if (width === 0 || height === 0) {
+      return;
+    }
+
+    modelCamera.aspect = width / height;
+    modelCamera.updateProjectionMatrix();
+    renderer.setSize(width, height, false);
+  });
+  resizeObserver.observe(modelViewer);
+
+  function resetView() {
+    modelCamera.position.set(0, 0, 4);
+    modelControls.target.set(0, 0, 0);
+    modelControls.update();
+  }
+
+  resetModelView.addEventListener("click", resetView);
+
+  loadMaskModel()
+    .then((model) => {
+      const bounds = new THREE.Box3().setFromObject(model);
+      const size = bounds.getSize(new THREE.Vector3());
+      const largestDimension = Math.max(size.x, size.y, size.z);
+
+      if (!Number.isFinite(largestDimension) || largestDimension <= 0) {
+        throw new Error("The FBX file contains no visible 3D geometry.");
+      }
+
+      const center = bounds.getCenter(new THREE.Vector3());
+      const viewerModel = new THREE.Group();
+      const viewerContent = model.clone(true);
+      viewerContent.position.sub(center);
+      viewerModel.add(viewerContent);
+      viewerModel.scale.setScalar(2.4 / largestDimension);
+      scene.add(viewerModel);
+
+      modelStatus.textContent = "MODEL LOADED";
+      modelMessage.hidden = true;
+      resetModelView.disabled = false;
+      resetView();
+    })
+    .catch((error) => {
+      showModelError(
+        "Could not load models/scba_mask.fbx. Check that the file is present and valid.",
+        error,
+      );
+    });
+
+  function render() {
+    modelControls.update();
+    renderer.render(scene, modelCamera);
+    requestAnimationFrame(render);
+  }
+  render();
+}
+
+initModelViewer();
+renderMode.dispatchEvent(new Event("change"));
+window.addEventListener("pagehide", () => {
+  stopCamera();
+  faceLandmarker?.close();
+  poseTracker?.close();
+  avatar.close();
+});

@@ -34,6 +34,17 @@ Save it as:
 
 `models/pose_landmarker_lite.task`
 
+Download the MediaPipe Face Landmarker task model from:
+https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+
+Save it as:
+
+`frontend/public/models/face_landmarker.task`
+
+Place the SCBA mask FBX at:
+
+`frontend/public/models/scba_mask.fbx`
+
 ## Run
 
 From the repository root:
@@ -50,6 +61,110 @@ python src/pose_detection.py --record-dir recordings
 
 Press **Q** or **Ctrl+Q** to quit.
 
+## Browser frontend
+
+The browser UI provides a local camera preview, MediaPipe face and pose tracking,
+a Three.js avatar overlay, an optional SCBA mask, and a manually selected PPE
+checklist. Use the rendering-mode selector for the live-camera overlay or the 3D
+environment. Pose and avatar skeletons, joint markers, pose-inference/render
+FPS, and tracking coverage are available under **Motion capture diagnostics**.
+The MediaPipe skeleton is hidden unless its debug checkbox is enabled. Camera
+access is requested only after selecting **Start camera**.
+
+The motion-capture avatar must be a rigged humanoid GLB at
+`models/avatar.glb`, with at least one `SkinnedMesh` and a usable humanoid
+skeleton. The app inspects and reports the bones it detects, maps, and cannot
+find. Bone naming varies between assets, so check the runtime mapping report
+after replacing the GLB. The MediaPipe Pose Landmarker task is expected at
+`models/pose_landmarker_lite.task`.
+
+Pose inference uses the unmirrored video element; selfie mirroring is CSS-only.
+The camera-mode avatar canvas is mirrored with the video, while root placement
+uses the unmirrored normalized landmarks. Debug landmarks use the displayed
+mirror so anatomical labels stay attached to the same image joints. The
+coordinate adapter treats world landmarks as camera-aligned (+X image-right,
++Y up, +Z away) and converts them to Three.js (+Y up, +Z toward the viewer).
+MediaPipe documents hip-centred world coordinates in meters but does not state
+all axis signs in the task API documentation, so verify signs against live
+landmark labels and the calibration axes on the target camera. Synthetic input
+is constructed in this convention; it is not evidence that the live feed uses
+the same convention.
+
+Segment rest directions are captured from the loaded rig in avatar-root
+coordinates. Retargeted rotations are converted through each bone's current
+parent transform rather than applying a generic bone-axis assumption. Before
+segment alignment, MediaPipe directions are transformed through the inverse
+fitted avatar-root transform, so camera-mode nonuniform scaling does not skew
+the target direction. The model's reported forward direction is inferred from
+its named left/right shoulders and vertical axis. Torso orientation and face orientation
+from the nose/ear landmarks remain estimates; proportions, axis differences,
+and head landmark noise may require model-specific calibration. In camera mode,
+horizontal scale is fitted from the detected shoulder span (hip span is the
+fallback), while vertical scale is fitted from nose-to-ankle height (torso or
+nose-to-shoulder height are fallbacks). These are compared with dimensions
+measured from the loaded rig rather than assumed bone lengths. The supplied
+model's measured shoulder-to-height ratio differs substantially from the
+synthetic reference pose, so the camera overlay currently uses separate
+horizontal and vertical scale factors to align screen-space joints. World
+landmarks drive bone orientation, while camera-mode root scale is fitted to
+the detected body dimensions. This can stretch the avatar and does not
+preserve the GLB's original proportions. Bone segment lengths retain the
+loaded rig's proportions, so residual joint offsets can remain when its
+proportions differ from the detected person. Use a model with closer body
+proportions or calibrate its dimensions before treating the overlay as
+anatomically aligned. The 3D environment mode keeps uniform scaling.
+Hip-centred world landmarks do not provide absolute camera depth, so
+screen placement and scale remain image-based approximations. Pose tracking
+continues if the optional face/mask overlay cannot initialize; the face overlay
+still requires its own task and mask assets.
+
+After the face-tracked overlay is active, select **Record clip** and then
+**Stop and save** to store the composited camera-and-mask video as a WebM file
+in the repository's `recordings/` folder. Browser recording is available through
+the local Vite development server; clips are limited to 250 MB.
+
+From the `frontend/` directory, start the local development server:
+
+```powershell
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 in a browser and select **Start camera** to allow
+camera access and start live pose inference. The pose task model must be present
+at `models/pose_landmarker_lite.task`; the rigged avatar must be at
+`models/avatar.glb`.
+
+### Live webcam motion test
+
+1. Optionally select **Synthetic motion test (debug only)** to confirm that the
+   avatar cycles through neutral, separate arm raises, elbow bends, head/torso
+   movement, knee bends, partial occlusion, and loss/reacquisition. The status
+   explicitly labels this input as synthetic; it does not test the webcam or
+   MediaPipe.
+2. Turn the synthetic test off, select **Start camera**, grant permission, and
+   stand far enough back for the required joints to remain in frame. Confirm
+   the status changes to live tracking, landmark coverage is shown, and pose
+   inference and render FPS appear.
+3. With **Show MediaPipe skeleton** off, test neutral standing, raise the left
+   and right arms independently, bend each elbow, turn the head, lean the
+   torso, bend each knee, briefly occlude part of the body, then move out of
+   view and return. The avatar should follow visible joints and ease toward rest
+   during tracking loss. Enable the skeleton only when diagnosing landmark
+   alignment.
+4. Check **Detected bones / Mapped / Missing** in the diagnostic report. Record
+   any pose loss, jitter, left/right mismatch, or delayed reacquisition along
+   with the displayed FPS.
+5. Enable **Show retargeting calibration** to see anatomical left/right joint
+   labels, torso up/forward indicators, mapped avatar bone axes, head-forward
+   direction, and torso/head yaw-pitch-roll readouts. Use these diagnostics to
+   distinguish landmark interpretation errors from model rest-axis issues.
+
+The synthetic sequence is an automated UI/debug aid, not a substitute for
+testing with a real person and camera. Browser automation cannot validate body
+poses, occlusion handling, or camera-specific tracking quality; report those as
+untested unless physically exercised on the target device.
+
 ## Project structure
 
 ```text
@@ -57,9 +172,26 @@ AI-Intelligent-Safety-Mirror/
 ├── assets/
 │   └── ppe/                 # Transparent PNG PPE assets (Stage 2)
 ├── models/
-│   └── pose_landmarker_lite.task  # Download separately
+│   ├── avatar.glb           # Rigged humanoid GLB required for motion retargeting
+│   └── pose_landmarker_lite.task  # MediaPipe pose model
 ├── src/
-│   └── pose_detection.py
+│   ├── pose_detection.py    # Webcam pose detection and recording
+│   └── scba_tracking.py     # Approximate SCBA anchor from world landmarks
+├── frontend/
+│   ├── public/
+│   │   └── models/
+│   │       ├── face_landmarker.task # MediaPipe face model
+│   │       └── scba_mask.fbx        # 3D mask asset
+│   ├── index.html            # Browser UI
+│   ├── main.js               # App integration and UI
+│   ├── avatar.js             # GLB loading, rig validation, and avatar rendering
+│   ├── retargeting.js        # Bone mapping and motion retargeting
+│   ├── poseTracker.js        # MediaPipe Pose Landmarker
+│   ├── camera.js             # Camera stream and screen-space projection
+│   ├── style.css
+│   ├── package.json
+│   ├── package-lock.json
+│   └── vite.config.js
 ├── .gitignore
 ├── requirements.txt
 └── README.md
@@ -76,6 +208,7 @@ AI-Intelligent-Safety-Mirror/
 
 ## Notes
 
-- The model file is not committed to Git because it is a downloaded binary asset.
+- Downloaded `.task` model files are ignored by Git; provide them locally
+  before running the relevant demos.
 - Keep the camera view well lit and ensure the user's full body is visible.
 - MediaPipe landmark coordinates are estimates. They are not precise anatomical measurements.

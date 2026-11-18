@@ -110,38 +110,96 @@ def decode_simcc(
     norm_x = refined_x / float(x_bins)
     norm_y = refined_y / float(y_bins)
 
-    min_val = np.minimum(max_val_x, max_val_y)
-    scores = 1.0 / (1.0 + np.exp(-np.clip(min_val, -10.0, 10.0)))
+    # Reject boundary clamping artifacts: out-of-frame joints clamp against edge bins
+    is_boundary = (max_idx_x <= 2) | (max_idx_x >= x_bins - 3) | (max_idx_y <= 2) | (max_idx_y >= y_bins - 3)
+    mean_x = np.mean(simcc_x, axis=1)
+    mean_y = np.mean(simcc_y, axis=1)
+    prominence = np.minimum(max_val_x - mean_x, max_val_y - mean_y)
+
+    scores = np.zeros(num_keypoints, dtype=np.float32)
+    valid_mask = ~is_boundary & (prominence > 0.10)
+    scores[valid_mask] = np.clip((prominence[valid_mask] - 0.10) / 0.35, 0.0, 1.0)
 
     coords = np.stack([norm_x, norm_y], axis=1)
     return coords, scores
 
 
+def decode_simcc_3d(
+    simcc_x: np.ndarray,
+    simcc_y: np.ndarray,
+    simcc_z: Optional[np.ndarray] = None,
+    split_ratio: float = 2.0,
+    depth_min: float = -1.2,
+    depth_max: float = 1.2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Decodes SimCC 1D heatmaps into 3D coordinates (x, y, metric_z) and confidence scores.
+    simcc_x: (1, 17, x_bins)
+    simcc_y: (1, 17, y_bins)
+    simcc_z: Optional (1, 17, z_bins) root-relative depth in meters
+    Returns:
+        coords: (17, 3) where [:, 0:2] in [0, 1] range, and [:, 2] in meters
+        scores: (17,) confidence values
+    """
+    coords_2d, scores = decode_simcc(simcc_x, simcc_y, split_ratio)
+    num_keypoints = coords_2d.shape[0]
+
+    coords_3d = np.zeros((num_keypoints, 3), dtype=np.float32)
+    coords_3d[:, :2] = coords_2d
+
+    if simcc_z is not None:
+        if simcc_z.ndim == 3:
+            simcc_z = simcc_z[0]
+        z_bins = simcc_z.shape[1]
+        max_idx_z = np.argmax(simcc_z, axis=1)
+        max_val_z = np.max(simcc_z, axis=1)
+
+        refined_z = np.zeros(num_keypoints, dtype=np.float32)
+        for k in range(num_keypoints):
+            sz0 = max(0, max_idx_z[k] - 3)
+            sz1 = min(z_bins, max_idx_z[k] + 4)
+            wz = np.exp(np.clip(simcc_z[k, sz0:sz1] - max_val_z[k], -20.0, 20.0))
+            sum_wz = np.sum(wz)
+            refined_z[k] = (
+                np.sum(np.arange(sz0, sz1) * wz) / sum_wz if sum_wz > 0 else max_idx_z[k]
+            )
+
+        norm_z = refined_z / float(z_bins - 1)
+        coords_3d[:, 2] = norm_z * (depth_max - depth_min) + depth_min
+
+    return coords_3d, scores
+
+
 class RTMPoseTracker:
     """
-    OpenMMLab RTMPose tracking engine with MediaPipe backup.
+    OpenMMLab RTMPose / RTMPose-3D tracking engine with MediaPipe backup.
     """
 
     def __init__(
         self,
         model_path: Optional[Path] = None,
         backup_model_path: Optional[Path] = None,
-        preferred_engine: str = "rtmpose",
+        preferred_engine: str = "mediapipe",
     ):
         self.preferred_engine = preferred_engine
         self.active_engine = "mediapipe"
         self.net = None
         self.mediapipe_landmarker = None
-        self.input_size = (192, 256)  # width, height
+        self.is_3d = (preferred_engine == "rtmpose3d")
+        self.input_size = (256, 256) if self.is_3d else (192, 256)  # width, height
         self.start_time = 0
 
         # Model paths
-        if model_path is None:
+        if model_path is not None:
+            model_path = Path(model_path)
+        elif self.is_3d:
+            model_path = Path("models/rtmpose3d-m.onnx")
+        else:
             model_path = Path("models/rtmpose-m.onnx")
-        if backup_model_path is None:
-            backup_model_path = Path("models/pose_landmarker_lite.task")
 
-        # 1. Initialize MediaPipe Pose as backup
+        backup_model_path = Path(backup_model_path) if backup_model_path is not None else Path("models/pose_landmarker_lite.task")
+
+        # 1. Initialize MediaPipe Pose as rock-solid engine / backup
         if _MEDIAPIPE_AVAILABLE and backup_model_path.is_file():
             try:
                 base_options = python.BaseOptions(model_asset_path=str(backup_model_path))
@@ -158,31 +216,30 @@ class RTMPoseTracker:
             except Exception as e:
                 print(f"[RTMPoseTracker] MediaPipe backup init note: {e}")
 
-        # 2. Attempt RTMPose initialization
-        if self.preferred_engine == "rtmpose" and model_path.is_file():
+        # 2. Attempt RTMPose / RTMPose-3D initialization if requested
+        if self.preferred_engine in ("rtmpose", "rtmpose3d") and model_path.is_file():
             try:
                 self.net = cv2.dnn.readNetFromONNX(str(model_path))
-                # Enable OpenCV DNN acceleration if available
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-                self.active_engine = "rtmpose"
-                print(f"[RTMPoseTracker] RTMPose engine initialized from {model_path} (SOTA)")
+                self.active_engine = self.preferred_engine
+                print(f"[RTMPoseTracker] {self.active_engine.upper()} engine initialized from {model_path}")
             except Exception as e:
-                print(f"[RTMPoseTracker] Could not load RTMPose ONNX ({e}). Kept MediaPipe backup.")
+                print(f"[RTMPoseTracker] Could not load ONNX ({e}). Kept MediaPipe 3D Pose.")
                 self.active_engine = "mediapipe"
-        elif self.preferred_engine == "rtmpose":
-            print(f"[RTMPoseTracker] RTMPose model not found at {model_path}. Using MediaPipe backup.")
+        elif self.preferred_engine in ("rtmpose", "rtmpose3d"):
+            print(f"[RTMPoseTracker] Model not found at {model_path}. Using MediaPipe 3D Pose.")
 
     def detect(self, bgr_image: np.ndarray) -> PoseResult:
         """
         Runs pose detection on a BGR image frame.
         Returns a PoseResult compatible with MediaPipe landmark access.
         """
-        if self.active_engine == "rtmpose" and self.net is not None:
+        if self.active_engine in ("rtmpose", "rtmpose3d") and self.net is not None:
             try:
                 return self._detect_rtmpose(bgr_image)
             except Exception as e:
-                print(f"[RTMPoseTracker] RTMPose error, falling back to MediaPipe: {e}")
+                print(f"[RTMPoseTracker] {self.active_engine} error, falling back to MediaPipe: {e}")
                 if self.mediapipe_landmarker:
                     return self._detect_mediapipe(bgr_image)
 
@@ -207,16 +264,18 @@ class RTMPoseTracker:
 
         simcc_x = outputs[0]
         simcc_y = outputs[1]
-        coords, scores = decode_simcc(simcc_x, simcc_y)
+        simcc_z = outputs[2] if len(outputs) >= 3 else None
+        coords, scores = decode_simcc_3d(simcc_x, simcc_y, simcc_z)
 
         # Convert 17 COCO keypoints to 33 MediaPipe landmarks
         landmarks = [Landmark(x=0.5, y=0.5, z=0.0, visibility=0.0, presence=0.0) for _ in range(33)]
         world_landmarks = [Landmark(x=0.0, y=0.0, z=0.0, visibility=0.0, presence=0.0) for _ in range(33)]
 
         for coco_idx, mp_idx in COCO_TO_MEDIAPIPE:
-            kx, ky = coords[coco_idx]
+            kx, ky = coords[coco_idx, 0], coords[coco_idx, 1]
+            kz = coords[coco_idx, 2] if coords.shape[1] > 2 else 0.0
             sc = float(scores[coco_idx])
-            landmarks[mp_idx] = Landmark(x=float(kx), y=float(ky), z=0.0, visibility=sc, presence=sc)
+            landmarks[mp_idx] = Landmark(x=float(kx), y=float(ky), z=float(kz), visibility=sc, presence=sc)
 
         # World landmarks calculation
         l_sh = landmarks[11]
@@ -226,19 +285,20 @@ class RTMPoseTracker:
         sh_span = np.hypot(l_sh.x - r_sh.x, l_sh.y - r_sh.y)
         pixels_to_meters = 0.40 / max(sh_span, 0.05)
 
-        for _, mp_idx in COCO_TO_MEDIAPIPE:
+        for coco_idx, mp_idx in COCO_TO_MEDIAPIPE:
             lm = landmarks[mp_idx]
             if lm.visibility > 0.05:
                 wx = (lm.x - ref_x) * pixels_to_meters
                 wy = (lm.y - ref_y) * pixels_to_meters
+                wz = lm.z if lm.z != 0.0 else 0.0
                 world_landmarks[mp_idx] = Landmark(
-                    x=wx, y=wy, z=0.0, visibility=lm.visibility, presence=lm.presence
+                    x=wx, y=wy, z=wz, visibility=lm.visibility, presence=lm.presence
                 )
 
         return PoseResult(
             pose_landmarks=[landmarks],
             pose_world_landmarks=[world_landmarks],
-            engine="rtmpose",
+            engine=self.active_engine,
         )
 
     def _detect_mediapipe(self, bgr_image: np.ndarray) -> PoseResult:

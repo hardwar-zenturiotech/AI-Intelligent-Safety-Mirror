@@ -17,6 +17,8 @@ import {
   createSyntheticPose,
   isLandmarkUsable,
 } from "./rtmposeTracker.js";
+import { RTMW3DTracker } from "./src/rtmw3dTracker.js";
+import { BodyPixSegmenter } from "./bodyPixSegmenter.js";
 
 const cameraPreview = document.querySelector("#cameraPreview");
 const cameraPlaceholder = document.querySelector("#cameraPlaceholder");
@@ -60,12 +62,36 @@ const poseFps = document.querySelector("#poseFps");
 const poseConfidence = document.querySelector("#poseConfidence");
 const poseDebugCanvas = document.querySelector("#poseDebugCanvas");
 const showPoseSkeleton = document.querySelector("#showPoseSkeleton");
+const show3dDiagnosticSkeleton = document.querySelector("#show3dDiagnosticSkeleton");
 const showAvatarSkeleton = document.querySelector("#showAvatarSkeleton");
 const showJointPositions = document.querySelector("#showJointPositions");
 const syntheticPoseInput = document.querySelector("#syntheticPoseInput");
 const showRetargetingDebug = document.querySelector("#showRetargetingDebug");
 const retargetingReadout = document.querySelector("#retargetingReadout");
 const resetAvatarCalibration = document.querySelector("#resetAvatarCalibration");
+const bodyPixEdgeCanvas = document.querySelector("#bodyPixEdgeCanvas");
+const enableBodyPixSegmentation = document.querySelector("#enableBodyPixSegmentation");
+const showBodyPixEdges = document.querySelector("#showBodyPixEdges");
+const bodyPixFps = document.querySelector("#bodyPixFps");
+
+const bodyPixSegmenter = new BodyPixSegmenter();
+bodyPixSegmenter.onStatus(({ message }) => {
+  if (bodyPixFps) bodyPixFps.textContent = message;
+});
+
+enableBodyPixSegmentation?.addEventListener("change", (e) => {
+  bodyPixSegmenter.enabled = e.target.checked;
+  if (!e.target.checked && bodyPixEdgeCanvas) {
+    bodyPixEdgeCanvas.hidden = true;
+  }
+});
+
+showBodyPixEdges?.addEventListener("change", (e) => {
+  bodyPixSegmenter.showEdges = e.target.checked;
+  if (!e.target.checked && bodyPixEdgeCanvas) {
+    bodyPixEdgeCanvas.hidden = true;
+  }
+});
 
 const OVERLAY_CAMERA_DISTANCE = 600;
 const VIDEO_BACKGROUND_Z = -400;
@@ -150,6 +176,7 @@ async function startCamera() {
     setCameraState(true);
     cameraMessage.textContent = "Loading pose tracking...";
     startPoseTrackingLoop();
+    void bodyPixSegmenter.init();
     try {
       poseTracker = await loadPoseTracker();
       setPoseStatus("Pose tracker ready; waiting for a visible person.", "ready");
@@ -179,6 +206,10 @@ async function startCamera() {
 function stopCamera() {
   stopPoseTrackingLoop();
   avatar.update(null, null);
+  avatar.setSegmentationBounds(null);
+  if (bodyPixEdgeCanvas) {
+    bodyPixEdgeCanvas.hidden = true;
+  }
   if (!syntheticPoseInput.checked) {
     poseConfidence.textContent = "Tracking: --";
     setPoseStatus("Camera stopped. Start it again for live pose tracking.", "idle");
@@ -275,6 +306,17 @@ function renderCompositeRecordingFrame() {
   // Draw Pose Debug skeleton (if visible)
   if (poseDebugCanvas && !poseDebugCanvas.hidden && poseDebugCanvas.width > 0 && poseDebugCanvas.height > 0) {
     recordingCtx.drawImage(poseDebugCanvas, 0, 0, w, h);
+  }
+
+  // Draw BodyPix segmentation edge overlay (if active)
+  if (bodyPixEdgeCanvas && !bodyPixEdgeCanvas.hidden && bodyPixEdgeCanvas.width > 0 && bodyPixEdgeCanvas.height > 0) {
+    recordingCtx.save();
+    if (renderMode.value !== "environment") {
+      recordingCtx.translate(w, 0);
+      recordingCtx.scale(-1, 1);
+    }
+    recordingCtx.drawImage(bodyPixEdgeCanvas, 0, 0, w, h);
+    recordingCtx.restore();
   }
 }
 
@@ -493,14 +535,21 @@ recordToggle.addEventListener("click", () => {
 updateRecordingControls();
 
 function updateCalibration() {
-  overlayCalibration.size = Number(maskSizeInput.value) / 100;
-  overlayCalibration.offsetX = Number(maskOffsetXInput.value);
-  overlayCalibration.offsetY = Number(maskOffsetYInput.value);
-  overlayCalibration.depth = Number(maskDepthInput.value);
+  const size = Number(maskSizeInput.value) / 100;
+  const offsetX = Number(maskOffsetXInput.value);
+  const offsetY = Number(maskOffsetYInput.value);
+  const depth = Number(maskDepthInput.value);
+  overlayCalibration.size = size;
+  overlayCalibration.offsetX = offsetX;
+  overlayCalibration.offsetY = offsetY;
+  overlayCalibration.depth = depth;
   maskSizeValue.value = `${maskSizeInput.value}%`;
-  maskOffsetXValue.value = `${overlayCalibration.offsetX} px`;
-  maskOffsetYValue.value = `${overlayCalibration.offsetY} px`;
-  maskDepthValue.value = `${overlayCalibration.depth} px`;
+  maskOffsetXValue.value = `${offsetX} px`;
+  maskOffsetYValue.value = `${offsetY} px`;
+  maskDepthValue.value = `${depth} px`;
+  if (avatar) {
+    avatar.setMaskCalibration({ size, offsetX, offsetY, depth });
+  }
 }
 
 [maskSizeInput, maskOffsetXInput, maskOffsetYInput, maskDepthInput].forEach((input) => {
@@ -508,7 +557,7 @@ function updateCalibration() {
 });
 
 resetCalibration.addEventListener("click", () => {
-  maskSizeInput.value = "82";
+  maskSizeInput.value = "100";
   maskOffsetXInput.value = "0";
   maskOffsetYInput.value = "0";
   maskDepthInput.value = "0";
@@ -545,6 +594,15 @@ function drawPoseDebug(landmarks, video = cameraPreview) {
   const showJoints = showJointPositions.checked;
   const showCalibration = showRetargetingDebug.checked;
   const mirrorDebug = !cameraStage.classList.contains("is-environment");
+
+  if (poseTracker?.activeEngine === "rtmw3d" && poseTracker.rtmw3dTracker) {
+    poseDebugCanvas.hidden = !showSkeleton && !showJoints;
+    if (!poseDebugCanvas.hidden) {
+      poseTracker.rtmw3dTracker.draw2DOverlay(poseDebugCanvas, video);
+    }
+    return;
+  }
+
   poseDebugCanvas.hidden = !showSkeleton && !showJoints && !showCalibration;
   if (poseDebugCanvas.hidden) {
     return;
@@ -772,6 +830,41 @@ function updatePoseFrame(frameTime = performance.now()) {
     const pose = poseTracker.detect(cameraPreview, now);
     recordPoseFrame(now, "pose");
     avatar.update(pose.landmarks, pose.worldLandmarks, cameraPreview);
+
+    // Asynchronous BodyPix segmentation & edge detection pass
+    if (enableBodyPixSegmentation?.checked && bodyPixSegmenter.ready) {
+      bodyPixSegmenter
+        .segment(cameraPreview)
+        .then((segResult) => {
+          if (!segResult) return;
+          if (segResult.bounds) {
+            avatar.setSegmentationBounds(segResult.bounds);
+          }
+          if (showBodyPixEdges?.checked && bodyPixSegmenter.enabled) {
+            bodyPixEdgeCanvas.hidden = false;
+            const rect = cameraStage.getBoundingClientRect();
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+            const w = Math.round(rect.width * pixelRatio);
+            const h = Math.round(rect.height * pixelRatio);
+            if (bodyPixEdgeCanvas.width !== w || bodyPixEdgeCanvas.height !== h) {
+              bodyPixEdgeCanvas.width = w;
+              bodyPixEdgeCanvas.height = h;
+            }
+            const ctx = bodyPixEdgeCanvas.getContext("2d");
+            ctx.clearRect(0, 0, w, h);
+            ctx.drawImage(segResult.edgeCanvas, 0, 0, w, h);
+          } else {
+            bodyPixEdgeCanvas.hidden = true;
+          }
+          if (bodyPixFps) {
+            bodyPixFps.textContent = `BodyPix: ${bodyPixSegmenter.fps || "--"} FPS`;
+          }
+        })
+        .catch((e) => console.warn("BodyPix frame error:", e));
+    } else if (bodyPixEdgeCanvas) {
+      bodyPixEdgeCanvas.hidden = true;
+    }
+
     updateRetargetingReadout();
     const landmarks = pose.landmarks;
     if (!landmarks || !pose.worldLandmarks) {
@@ -781,7 +874,17 @@ function updatePoseFrame(frameTime = performance.now()) {
       return;
     }
 
+    if (poseTracker.activeEngine === "rtmw3d" && poseTracker.rtmw3dTracker && avatar?.scene) {
+      poseTracker.rtmw3dTracker.attachToScene(avatar.scene);
+      if (show3dDiagnosticSkeleton) {
+        poseTracker.rtmw3dTracker.setDiagnosticVisibility(show3dDiagnosticSkeleton.checked);
+      }
+    }
+
     drawPoseDebug(landmarks);
+    if (poseTracker.activeEngine === "rtmw3d" && pose.inferenceFps) {
+      poseFps.textContent = `FPS: ${pose.inferenceFps} [${(pose.backend || "WASM").toUpperCase()}] / ${avatar.fps || "--"} render`;
+    }
     const trackedIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
     const visible = trackedIndices.filter((index) =>
       isLandmarkUsable(landmarks[index]),
@@ -857,7 +960,7 @@ function updateSyntheticPoseFrame(timestamp) {
 
 function loadPoseTracker() {
   if (!poseTrackerPromise) {
-    const preferredEngine = trackingEngine ? trackingEngine.value : "rtmpose";
+    const preferredEngine = trackingEngine ? trackingEngine.value : "mediapipe";
     poseTrackerPromise = UnifiedPoseTracker.create({
       preferredEngine,
       onStatus: (status) => {
@@ -872,8 +975,25 @@ function loadPoseTracker() {
 }
 
 trackingEngine?.addEventListener("change", (event) => {
+  const engine = event.target.value;
   if (poseTracker) {
-    poseTracker.setEngine(event.target.value);
+    if (engine !== "rtmw3d" && poseTracker.rtmw3dTracker) {
+      poseTracker.rtmw3dTracker.setDiagnosticVisibility(false);
+    }
+    poseTracker.setEngine(engine).then(() => {
+      if (engine === "rtmw3d" && poseTracker.rtmw3dTracker && avatar?.scene) {
+        poseTracker.rtmw3dTracker.attachToScene(avatar.scene);
+        if (show3dDiagnosticSkeleton) {
+          poseTracker.rtmw3dTracker.setDiagnosticVisibility(show3dDiagnosticSkeleton.checked);
+        }
+      }
+    });
+  }
+});
+
+show3dDiagnosticSkeleton?.addEventListener("change", () => {
+  if (poseTracker?.rtmw3dTracker) {
+    poseTracker.rtmw3dTracker.setDiagnosticVisibility(show3dDiagnosticSkeleton.checked);
   }
 });
 
@@ -935,30 +1055,83 @@ function isRespiratorActive() {
   return respiratorToggle?.getAttribute("aria-pressed") === "true";
 }
 
+const mainScaleSlider = document.querySelector("#mainScaleSlider");
+const liveScaleBadge = document.querySelector("#liveScaleBadge");
+const stepScaleDown = document.querySelector("#stepScaleDown");
+const stepScaleUp = document.querySelector("#stepScaleUp");
+const quickResetScale = document.querySelector("#quickResetScale");
+const presetButtons = document.querySelectorAll(".preset-btn[data-scale]");
+
+function setAvatarScalePercent(val) {
+  const clamped = Math.min(Math.max(Math.round(val), 40), 250);
+  if (mainScaleSlider) mainScaleSlider.value = String(clamped);
+  if (avatarSizeInput) avatarSizeInput.value = String(clamped);
+  if (liveScaleBadge) liveScaleBadge.textContent = `${clamped}%`;
+  if (avatarSizeValue) avatarSizeValue.value = `${clamped}%`;
+
+  presetButtons.forEach((btn) => {
+    btn.classList.toggle("active", Number(btn.dataset.scale) === clamped);
+  });
+
+  const depth = avatarDepthInput ? Number(avatarDepthInput.value) : 0;
+  avatar.setUserCalibration({ size: clamped / 100, depth });
+}
+
+mainScaleSlider?.addEventListener("input", (e) => {
+  setAvatarScalePercent(Number(e.target.value));
+});
+
+avatarSizeInput?.addEventListener("input", (e) => {
+  setAvatarScalePercent(Number(e.target.value));
+});
+
+stepScaleDown?.addEventListener("click", () => {
+  const current = Number(mainScaleSlider?.value || 100);
+  setAvatarScalePercent(current - 5);
+});
+
+stepScaleUp?.addEventListener("click", () => {
+  const current = Number(mainScaleSlider?.value || 100);
+  setAvatarScalePercent(current + 5);
+});
+
+quickResetScale?.addEventListener("click", () => {
+  setAvatarScalePercent(100);
+});
+
+presetButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const scale = Number(btn.dataset.scale);
+    if (scale) {
+      setAvatarScalePercent(scale);
+    }
+  });
+});
+
 function updateAvatarSliders() {
   if (!avatarSizeInput || !avatarDepthInput) return;
   const size = Number(avatarSizeInput.value) / 100;
   const depth = Number(avatarDepthInput.value);
   if (avatarSizeValue) avatarSizeValue.value = `${avatarSizeInput.value}%`;
   if (avatarDepthValue) avatarDepthValue.value = `${depth} px`;
+  if (liveScaleBadge) liveScaleBadge.textContent = `${avatarSizeInput.value}%`;
+  if (mainScaleSlider) mainScaleSlider.value = avatarSizeInput.value;
   avatar.setUserCalibration({ size, depth });
 }
 
-[avatarSizeInput, avatarDepthInput].forEach((input) => {
-  input?.addEventListener("input", updateAvatarSliders);
-});
+avatarDepthInput?.addEventListener("input", updateAvatarSliders);
 
 resetAvatarSliders?.addEventListener("click", () => {
   if (avatarSizeInput) avatarSizeInput.value = "100";
   if (avatarDepthInput) avatarDepthInput.value = "0";
-  updateAvatarSliders();
+  setAvatarScalePercent(100);
   avatar.resetCalibration();
 });
 
 resetAvatarCalibration.addEventListener("click", () => {
   if (avatarSizeInput) avatarSizeInput.value = "100";
   if (avatarDepthInput) avatarDepthInput.value = "0";
-  updateAvatarSliders();
+  setAvatarScalePercent(100);
   avatar.resetCalibration();
   setPoseStatus("Avatar pose reset; position will be reacquired from tracking.", "ready");
 });

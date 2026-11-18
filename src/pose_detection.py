@@ -72,15 +72,21 @@ def parse_args():
     parser.add_argument(
         "--engine",
         type=str,
-        choices=["rtmpose", "mediapipe"],
-        default="rtmpose",
-        help="Pose tracking engine: OpenMMLab RTMPose (SOTA) or MediaPipe (backup)",
+        choices=["mediapipe", "rtmpose3d", "rtmpose"],
+        default="mediapipe",
+        help="Pose tracking engine: MediaPipe (smooth 3D recommended), RTMPose-3D (SimCC 3D), or RTMPose (2D SOTA)",
     )
     parser.add_argument(
         "--rtmpose-model",
         type=Path,
         default=Path("models/rtmpose-m.onnx"),
-        help="Path to RTMPose ONNX model",
+        help="Path to RTMPose 2D ONNX model",
+    )
+    parser.add_argument(
+        "--rtmpose3d-model",
+        type=Path,
+        default=Path("models/rtmpose3d-m.onnx"),
+        help="Path to RTMPose 3D ONNX model",
     )
     parser.add_argument(
         "--model",
@@ -105,8 +111,9 @@ def parse_args():
 def main() -> int:
     args = parse_args()
 
+    model_to_use = args.rtmpose3d_model if args.engine == "rtmpose3d" else args.rtmpose_model
     tracker = RTMPoseTracker(
-        model_path=args.rtmpose_model,
+        model_path=model_to_use,
         backup_model_path=args.model,
         preferred_engine=args.engine,
     )

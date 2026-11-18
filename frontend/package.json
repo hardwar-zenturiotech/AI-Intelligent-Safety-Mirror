@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite --config vite.config.js",
     "build": "vite --config vite.config.js build",
-    "test": "node test_retargeting.mjs && node test_rtmpose.mjs",
+    "test": "node test_retargeting.mjs && node test_rtmpose.mjs && node test_rtmw3d.mjs && node test_avatar_scaling.mjs && node test_bodypix.mjs",
     "preview": "vite --config vite.config.js preview"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.3",
+    "rtmlib-ts": "^0.1.0",
     "three": "^0.187.0"
   },
   "devDependencies": {

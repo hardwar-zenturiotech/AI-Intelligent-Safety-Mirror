@@ -13,8 +13,16 @@ frontend/dist/
 .idea/
 
 # Downloaded model binaries
+*.onnx
 models/*.task
+models/*.onnx
 frontend/public/models/*.task
+frontend/public/models/*.onnx
+frontend/public/models/rtmpose_extract/
+
+# Recordings and temporary analysis artifacts
+recordings/
+scratch/
 
 # OS
 .DS_Store

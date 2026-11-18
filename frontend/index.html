@@ -9,6 +9,9 @@
     />
     <title>Safety Mirror | Zenturio</title>
     <link rel="stylesheet" href="./style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js"></script>
     <script type="module" src="./main.js"></script>
   </head>
   <body>
@@ -63,6 +66,7 @@
                 hidden
               ></div>
               <canvas id="poseDebugCanvas" class="pose-debug-canvas" hidden></canvas>
+              <canvas id="bodyPixEdgeCanvas" class="bodypix-edge-canvas" hidden></canvas>
               <div class="camera-placeholder" id="cameraPlaceholder">
                 <div class="camera-icon" aria-hidden="true">
                   <svg viewBox="0 0 48 48" fill="none">
@@ -80,8 +84,10 @@
             <label class="mode-control" for="trackingEngine">
               <span>Pose tracking engine</span>
               <select id="trackingEngine">
-                <option value="rtmpose" selected>RTMPose (OpenMMLab SOTA)</option>
-                <option value="mediapipe">MediaPipe Pose (Backup)</option>
+                <option value="mediapipe" selected>MediaPipe 3D Pose (Smooth &amp; Stable - Recommended)</option>
+                <option value="rtmw3d">RTMW3D (3D)</option>
+                <option value="rtmpose3d">RTMPose 3D (OpenMMLab SimCC-3D)</option>
+                <option value="rtmpose">RTMPose 2D (OpenMMLab 2D)</option>
               </select>
             </label>
 
@@ -93,6 +99,32 @@
                 <option value="environment">3D environment</option>
               </select>
             </label>
+
+            <!-- Prominent Live 3D Model Manual Scale Control -->
+            <div class="scale-control-bar" id="scaleControlBar">
+              <div class="scale-control-header">
+                <div class="scale-control-title">
+                  <svg viewBox="0 0 20 20" fill="none" width="16" height="16" stroke="currentColor" stroke-width="2">
+                    <path d="M4 10h12M10 4v12"></path>
+                  </svg>
+                  <strong>3D Model Scale</strong>
+                  <span class="scale-indicator" id="liveScaleBadge">100%</span>
+                </div>
+                <div class="scale-quick-presets">
+                  <button type="button" class="preset-btn" data-scale="75">75%</button>
+                  <button type="button" class="preset-btn active" data-scale="100">100%</button>
+                  <button type="button" class="preset-btn" data-scale="120">120%</button>
+                  <button type="button" class="preset-btn" data-scale="140">140%</button>
+                  <button type="button" class="preset-btn" data-scale="160">160%</button>
+                  <button type="button" class="preset-btn reset-scale-btn" id="quickResetScale">Reset</button>
+                </div>
+              </div>
+              <div class="scale-slider-row">
+                <button type="button" class="step-btn" id="stepScaleDown" title="Decrease scale by 5%">−</button>
+                <input id="mainScaleSlider" type="range" min="40" max="250" value="100" step="1" />
+                <button type="button" class="step-btn" id="stepScaleUp" title="Increase scale by 5%">+</button>
+              </div>
+            </div>
 
             <div class="preview-controls">
               <div class="preview-messages">
@@ -120,13 +152,17 @@
             <details class="debug-controls" open>
               <summary>Motion capture diagnostics</summary>
               <div class="debug-options">
-                <label><input id="showPoseSkeleton" type="checkbox" /> Show MediaPipe skeleton</label>
+                <label><input id="showPoseSkeleton" type="checkbox" /> Show 2D skeleton overlay</label>
+                <label><input id="show3dDiagnosticSkeleton" type="checkbox" checked /> Show 3D diagnostic skeleton</label>
                 <label><input id="showAvatarSkeleton" type="checkbox" /> Show avatar skeleton</label>
                 <label><input id="showJointPositions" type="checkbox" /> Show joint positions</label>
                 <label><input id="syntheticPoseInput" type="checkbox" /> Synthetic motion test (debug only)</label>
                 <label><input id="showRetargetingDebug" type="checkbox" /> Show retargeting calibration</label>
+                <label><input id="enableBodyPixSegmentation" type="checkbox" checked /> BodyPix segmentation edge &amp; occlusion</label>
+                <label><input id="showBodyPixEdges" type="checkbox" checked /> Show segmentation edge contours</label>
                 <span id="poseFps">FPS: --</span>
                 <span id="poseConfidence">Tracking: --</span>
+                <span id="bodyPixFps">BodyPix: Ready</span>
               </div>
               <p id="poseStatus" class="tracking-status" data-state="idle" role="status" aria-live="polite">
                 Pose tracking will start with the camera.
@@ -191,9 +227,9 @@
                 <label class="calibration-slider" for="maskSize">
                   <span class="calibration-label">
                     <span>Size</span>
-                    <output id="maskSizeValue" for="maskSize">82%</output>
+                    <output id="maskSizeValue" for="maskSize">100%</output>
                   </span>
-                  <input id="maskSize" type="range" min="25" max="200" value="82" />
+                  <input id="maskSize" type="range" min="25" max="250" value="100" />
                 </label>
                 <label class="calibration-slider" for="maskOffsetX">
                   <span class="calibration-label">

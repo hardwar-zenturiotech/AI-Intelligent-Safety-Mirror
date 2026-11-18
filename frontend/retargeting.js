@@ -15,8 +15,10 @@ const BONE_ALIASES = {
   rightHand: ["righthand", "hand_r", "wrist.r"],
   leftUpperLeg: ["leftupleg", "leftupperleg", "thigh_l", "upperleg_l", "upperleg01.l"],
   leftLeg: ["leftleg", "leftlowerleg", "calf_l", "lowerleg_l", "lowerleg01.l"],
+  leftFoot: ["leftfoot", "foot_l", "foot.l", "footl", "leftankle", "ankle_l"],
   rightUpperLeg: ["rightupleg", "rightupperleg", "thigh_r", "upperleg_r", "upperleg01.r"],
   rightLeg: ["rightleg", "rightlowerleg", "calf_r", "lowerleg_r", "lowerleg01.r"],
+  rightFoot: ["rightfoot", "foot_r", "foot.r", "footr", "rightankle", "ankle_r"],
 };
 
 const SEGMENTS = [
@@ -107,7 +109,7 @@ export function convertMediaPipeWorldVector(point, target) {
 }
 
 export class AdaptiveQuaternionFilter {
-  constructor(minCutoff = 0.8, beta = 5.0) {
+  constructor(minCutoff = 0.5, beta = 2.5) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.current = new THREE.Quaternion();
@@ -128,6 +130,15 @@ export class AdaptiveQuaternionFilter {
     const sign = this.current.dot(target) < 0 ? -1 : 1;
     const dot = Math.min(Math.max(Math.abs(this.current.dot(target)), 0), 1);
     const angle = 2 * Math.acos(dot);
+
+    // Prevent unphysical instantaneous rotation snapping (>20 deg in a single 16ms frame)
+    const maxStep = Math.max(0.35, 18.0 * deltaSeconds);
+    let clampedTarget = target;
+    if (angle > maxStep) {
+      const targetNormalized = sign < 0 ? target.clone().set(-target.x, -target.y, -target.z, -target.w) : target;
+      clampedTarget = this.current.clone().slerp(targetNormalized, maxStep / angle);
+    }
+
     // Micro-motion deadband to prevent standing tremor
     const effectiveAngle = angle > 0.015 ? angle - 0.015 : angle * 0.2;
     const speed = deltaSeconds > 0 ? effectiveAngle / deltaSeconds : 0;
@@ -139,18 +150,22 @@ export class AdaptiveQuaternionFilter {
       1.0,
     );
 
-    if (sign < 0) {
-      const flipped = target.clone().set(-target.x, -target.y, -target.z, -target.w);
-      this.current.slerp(flipped, alpha);
+    if (clampedTarget === target) {
+      if (sign < 0) {
+        const flipped = target.clone().set(-target.x, -target.y, -target.z, -target.w);
+        this.current.slerp(flipped, alpha);
+      } else {
+        this.current.slerp(target, alpha);
+      }
     } else {
-      this.current.slerp(target, alpha);
+      this.current.copy(clampedTarget);
     }
     return this.current;
   }
 }
 
 export class AdaptiveDirectionFilter {
-  constructor(minCutoff = 0.9, beta = 5.5) {
+  constructor(minCutoff = 0.6, beta = 3.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.current = new THREE.Vector3();
@@ -240,6 +255,8 @@ export class MotionRetargeter {
     this.faceLateral = new THREE.Vector3();
     this.faceForward = new THREE.Vector3();
     this.faceUp = new THREE.Vector3();
+    this.lastHalfEarDist = 0.08;
+    this.lastNoseDepth = 0.11;
     this.headEuler = new THREE.Euler(0, 0, 0, "YXZ");
     this.torsoEuler = new THREE.Euler(0, 0, 0, "YXZ");
     this.delta = new THREE.Quaternion();
@@ -423,11 +440,11 @@ export class MotionRetargeter {
         ) {
           const lostCount = (this.segmentLostFrames.get(role) || 0) + 1;
           this.segmentLostFrames.set(role, lostCount);
-          if (lostCount <= 10) {
-            // Absorb 1-10 frame dropouts / sensor noise without snapping to rest
+          if (lostCount <= 45) {
+            // Retain last valid arm position through profile turns and self-occlusions
             continue;
           }
-          this.restoreBone(bone, smoothing);
+          this.restoreBone(bone, smoothing * 0.15);
           continue;
         }
         this.segmentLostFrames.set(role, 0);
@@ -550,6 +567,24 @@ export class MotionRetargeter {
     }
     this.torsoForward.normalize();
 
+    // Verify torsoForward points to the front side of the human (toward the nose)
+    if (isLandmarkUsable(worldLandmarks[0], CONFIDENCE_THRESHOLD)) {
+      convertMediaPipeWorldVector(worldLandmarks[0], this.nose);
+      // Anatomical outlier check: nose cannot be below shoulder center (+Y is upward)
+      if (this.nose.y > this.shoulderCenter.y - 0.15) {
+        const toNose = this.nose.clone().sub(this.shoulderCenter);
+        toNose.projectOnPlane(this.torsoUp);
+        if (toNose.lengthSq() > 1e-4) {
+          toNose.normalize();
+          if (this.torsoForward.dot(toNose) < -0.1) {
+            // Torso was computed facing backwards; flip it front-facing!
+            this.torsoForward.negate();
+            this.torsoLateral.negate();
+          }
+        }
+      }
+    }
+
     this.frameUp.crossVectors(this.torsoForward, this.torsoLateral).normalize();
     this.torsoFrameMatrix.makeBasis(this.torsoLateral, this.frameUp, this.torsoForward);
     this.measuredTorsoFrame.setFromRotationMatrix(this.torsoFrameMatrix);
@@ -597,42 +632,84 @@ export class MotionRetargeter {
 
   updateHead(worldLandmarks, delta = 0.016, smoothing = 1.0) {
     const head = this.mapping.head;
+    const hasLeftEar = isLandmarkUsable(worldLandmarks[7], CONFIDENCE_THRESHOLD);
+    const hasRightEar = isLandmarkUsable(worldLandmarks[8], CONFIDENCE_THRESHOLD);
+    const hasNose = isLandmarkUsable(worldLandmarks[0], CONFIDENCE_THRESHOLD);
+
     if (
       !head ||
       !this.restWorld.has(head) ||
-      !isLandmarkUsable(worldLandmarks[0], CONFIDENCE_THRESHOLD) ||
-      !isLandmarkUsable(worldLandmarks[7], CONFIDENCE_THRESHOLD) ||
-      !isLandmarkUsable(worldLandmarks[8], CONFIDENCE_THRESHOLD)
+      !hasNose ||
+      (!hasLeftEar && !hasRightEar)
     ) {
       this.headLostFrames = (this.headLostFrames || 0) + 1;
-      if (this.headLostFrames <= 3) {
+      if (this.headLostFrames <= 30) {
+        // Hold smooth orientation during profile turns and momentary ear occlusions
+        this.applyWorldRotation(head, this.desiredWorld, smoothing);
         return true;
       }
       return false;
     }
     this.headLostFrames = 0;
 
-    convertMediaPipeWorldVector(worldLandmarks[7], this.leftEar);
-    convertMediaPipeWorldVector(worldLandmarks[8], this.rightEar);
     convertMediaPipeWorldVector(worldLandmarks[0], this.nose);
+    if (hasLeftEar) convertMediaPipeWorldVector(worldLandmarks[7], this.leftEar);
+    if (hasRightEar) convertMediaPipeWorldVector(worldLandmarks[8], this.rightEar);
 
-    const earCenterX = (this.leftEar.x + this.rightEar.x) * 0.5;
-    const earCenterY = (this.leftEar.y + this.rightEar.y) * 0.5;
-    const earCenterZ = (this.leftEar.z + this.rightEar.z) * 0.5;
+    const headUp = this.faceUp
+      .set(0, 1, 0)
+      .applyQuaternion(this.filteredHeadFrame)
+      .normalize();
+    if (headUp.lengthSq() < 1e-4) {
+      headUp.set(0, 1, 0);
+    }
 
-    this.faceLateral.subVectors(this.leftEar, this.rightEar);
+    if (hasLeftEar && hasRightEar) {
+      this.faceLateral.subVectors(this.leftEar, this.rightEar);
+      const earDist = this.faceLateral.length();
+      if (earDist > 0.10 && earDist < 0.26) {
+        this.lastHalfEarDist = earDist * 0.5;
+      }
+      const earCenterX = (this.leftEar.x + this.rightEar.x) * 0.5;
+      const earCenterY = (this.leftEar.y + this.rightEar.y) * 0.5;
+      const earCenterZ = (this.leftEar.z + this.rightEar.z) * 0.5;
+      this.faceForward
+        .set(
+          this.nose.x - earCenterX,
+          this.nose.y - earCenterY,
+          this.nose.z - earCenterZ,
+        );
+      const noseDist = this.faceForward.length();
+      if (noseDist > 0.06 && noseDist < 0.20) {
+        this.lastNoseDepth = noseDist;
+      }
+    } else {
+      // Anatomically exact profile ear reconstruction:
+      // In head space, (nose - ear) = noseDepth * faceForward +/- halfEarDist * faceLateral.
+      // Rotating (nose - ear) by +/- theta around headUp yields the TRUE faceForward vector,
+      // completely eliminating the 45-degree horizontal flick when one ear drops in profile turns!
+      const theta = Math.atan2(this.lastHalfEarDist, this.lastNoseDepth);
+      if (hasLeftEar) {
+        // Right ear occluded in profile
+        this.faceForward.subVectors(this.nose, this.leftEar);
+        this.faceForward.projectOnPlane(headUp).normalize();
+        this.faceForward.applyAxisAngle(headUp, theta);
+        this.faceLateral.crossVectors(headUp, this.faceForward).normalize();
+      } else {
+        // Left ear occluded in profile
+        this.faceForward.subVectors(this.nose, this.rightEar);
+        this.faceForward.projectOnPlane(headUp).normalize();
+        this.faceForward.applyAxisAngle(headUp, -theta);
+        this.faceLateral.crossVectors(headUp, this.faceForward).normalize();
+      }
+    }
+
     if (this.faceLateral.lengthSq() < 1e-8) {
       return false;
     }
     this.faceLateral.normalize();
 
-    this.faceForward
-      .set(
-        this.nose.x - earCenterX,
-        this.nose.y - earCenterY,
-        this.nose.z - earCenterZ,
-      )
-      .projectOnPlane(this.faceLateral);
+    this.faceForward.projectOnPlane(this.faceLateral);
     if (this.faceForward.lengthSq() < 1e-8) {
       return false;
     }
@@ -663,9 +740,9 @@ export class MotionRetargeter {
   }
 
   restoreHead(smoothing) {
-    this.filteredHeadFrame.slerp(this.restTorsoFrame, smoothing * 0.55);
+    this.filteredHeadFrame.slerp(this.restTorsoFrame, smoothing * 0.15);
     this.headFilter.reset();
-    this.restoreBone(this.mapping.head, smoothing);
+    this.restoreBone(this.mapping.head, smoothing * 0.15);
     this.headEuler.set(0, 0, 0, "YXZ");
     this.diagnostics.headYaw = 0;
     this.diagnostics.headPitch = 0;

@@ -54,7 +54,7 @@ class AdaptiveScalarFilter {
 
     const diff = Math.abs(this.current - target);
     // Subtle deadband on micro-scale fluctuations to stop size breathing
-    const effectiveDiff = diff > 0.006 * Math.abs(this.current) ? diff : diff * 0.2;
+    const effectiveDiff = diff > 0.015 * Math.abs(this.current) ? diff : diff * 0.1;
     const speed = deltaSeconds > 0 ? effectiveDiff / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
@@ -91,7 +91,7 @@ class AdaptivePointFilter {
 
     const dist = Math.hypot(targetX - this.currentX, targetY - this.currentY);
     // Deadband on sub-pixel micro-jitter to prevent shivering while standing still
-    const effectiveDist = dist > 1.2 ? dist - 1.2 : dist * 0.15;
+    const effectiveDist = dist > 2.2 ? dist - 2.2 : dist * 0.1;
     const speed = deltaSeconds > 0 ? effectiveDist / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
@@ -148,16 +148,16 @@ export class Avatar {
     this.neutralPosition = new THREE.Vector3();
     this.tracked = null;
     this.renderMode = "camera";
-    this.modelShoulderWidth = 0.38;
-    this.modelHipWidth = 0.24;
-    this.modelShoulderHeight = 0.68;
+    this.modelShoulderWidth = 0.28;
+    this.modelHipWidth = 0.22;
+    this.modelShoulderHeight = 0;
     this.modelShoulderCenterX = 0;
     this.modelHeight = 1;
-    this.modelHipHeight = 0;
-    this.modelTorsoHeight = 0.32;
-    this.modelHeadHeight = 0.38;
-    this.modelHeadShoulderHeight = 0.18;
-    this.modelHeadToAnkleHeight = 0.62;
+    this.modelHipHeight = -0.264;
+    this.modelTorsoHeight = 0.264;
+    this.modelHeadHeight = 0.165;
+    this.modelHeadShoulderHeight = 0.165;
+    this.modelHeadToAnkleHeight = 0.86;
     this.modelShoulderAnchors = "upper-arm bones";
     this.lastScaleReference = "waiting for pose";
     this.lastHorizontalScaleReference = "waiting for pose";
@@ -174,9 +174,10 @@ export class Avatar {
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
     this.calibrationDebugVisible = false;
-    this.originFilter = new AdaptivePointFilter(0.8, 5.0);
+    this.originFilter = new AdaptivePointFilter(1.2, 8.0);
     this.scaleFilter = new AdaptiveScalarFilter(0.6, 4.0);
     this.widthFactorFilter = new AdaptiveScalarFilter(0.6, 4.0);
+    this.silhouetteBounds = null;
     this.scbaVisible = false;
     this.scbaCylinder = null;
     this.scbaMask = null;
@@ -226,6 +227,7 @@ export class Avatar {
       if (!Number.isFinite(size.y) || size.y <= 0) {
         throw new Error("avatar.glb has no measurable humanoid height.");
       }
+      this.modelHeightMeters = size.y;
       const hips = rig.mapping.hips;
       if (!hips) {
         throw new Error("No Hips/Pelvis bone was detected in the humanoid skeleton.");
@@ -265,28 +267,44 @@ export class Avatar {
         const leftShoulder = leftShoulderJoint.getWorldPosition(new THREE.Vector3());
         const rightShoulder = rightShoulderJoint.getWorldPosition(new THREE.Vector3());
         const measuredShoulderWidth = leftShoulder.distanceTo(rightShoulder);
+        // Calibrate model shoulder width: MediaPipe measures outer acromion width (~0.28 normalized),
+        // whereas glenohumeral joint centers are ~0.228. Scale appropriately to prevent oversized avatar.
         if (Number.isFinite(measuredShoulderWidth) && measuredShoulderWidth > 0.01) {
-          this.modelShoulderWidth = measuredShoulderWidth;
+          this.modelShoulderWidth = Math.max(measuredShoulderWidth * 1.15, 0.26);
         }
         this.modelShoulderHeight = (leftShoulder.y + rightShoulder.y) / 2;
         this.modelShoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2;
         this.modelTorsoHeight = Math.abs(this.modelShoulderHeight - this.modelHipHeight);
+        // True facial nose tip is approximately 0.165 above shoulder center in normalized humanoid coords
         const headPosition = rig.mapping.head?.getWorldPosition(new THREE.Vector3());
-        this.modelHeadHeight = headPosition ? headPosition.y : this.modelShoulderHeight + 0.12;
+        this.modelHeadHeight = headPosition ? headPosition.y + 0.050 : this.modelShoulderHeight + 0.165;
         this.modelHeadShoulderHeight = Math.abs(this.modelHeadHeight - this.modelShoulderHeight);
         this.modelShoulderAnchors = `${leftShoulderJoint.name} / ${rightShoulderJoint.name}`;
       }
-      const leftAnkle = rig.mapping.leftLeg;
-      const rightAnkle = rig.mapping.rightLeg;
+
+      // Find foot / ankle bones for accurate ground and head-to-ankle calibration
+      let footL = rig.mapping.leftFoot;
+      let footR = rig.mapping.rightFoot;
+      if (!footL || !footR) {
+        this.model.traverse((o) => {
+          if (o.isBone || o.name) {
+            const nl = o.name.toLowerCase();
+            if (!footL && (nl.includes("foot.l") || nl.includes("footl") || nl.includes("foot_l"))) footL = o;
+            if (!footR && (nl.includes("foot.r") || nl.includes("footr") || nl.includes("foot_r"))) footR = o;
+          }
+        });
+      }
+      const leftAnkle = footL || rig.mapping.leftLeg;
+      const rightAnkle = footR || rig.mapping.rightLeg;
       if (leftAnkle && rightAnkle) {
         const lPos = leftAnkle.getWorldPosition(new THREE.Vector3());
         const rPos = rightAnkle.getWorldPosition(new THREE.Vector3());
         const ankleY = (lPos.y + rPos.y) / 2;
         this.modelAnkleHeight = ankleY;
-        this.modelHeadToAnkleHeight = Math.abs((this.modelHeadHeight || 0.38) - ankleY);
+        this.modelHeadToAnkleHeight = Math.min(Math.max(Math.abs((this.modelHeadHeight || 0.165) - ankleY), 0.80), 0.90);
       } else {
-        this.modelAnkleHeight = -0.50;
-        this.modelHeadToAnkleHeight = 0.62;
+        this.modelAnkleHeight = -0.75;
+        this.modelHeadToAnkleHeight = 0.86;
       }
       if (rig.mapping.leftUpperLeg && rig.mapping.rightUpperLeg) {
         const leftHipPosition = rig.mapping.leftUpperLeg.getWorldPosition(new THREE.Vector3());
@@ -303,6 +321,12 @@ export class Avatar {
       this.createCalibrationHelpers(rig.mapping);
 
       // Attach 3D PPE items to the humanoid skeleton
+      // The avatar model is normalized by (1 / size.y). Geometries in scbaApparatus.js are
+      // modeled in real-world metric dimensions. We scale each attachment to match standard PPE dimensions:
+      // - Helmet: ~23.5 cm width
+      // - Mask: ~19.0 cm width
+      // - Vest: ~43.0 cm width
+      // - Cylinder: ~30.0 cm width, ~50 cm height
       const chestBone = rig.mapping.chest || rig.mapping.spine;
       const headBone = rig.mapping.head;
       const leftHandBone = rig.mapping.leftHand;
@@ -311,30 +335,39 @@ export class Avatar {
       if (chestBone) {
         // SCBA back air cylinder apparatus
         this.scbaCylinder = createSCBACylinderApparatus();
-        this.scbaCylinder.position.set(0, -0.05, -0.11);
+        this.scbaCylinder.scale.setScalar(1.02);
+        this.scbaCylinder.position.set(0, 0.085, -0.118);
         this.scbaCylinder.renderOrder = 2;
         this.scbaCylinder.visible = Boolean(this.ppeVisibility.respirator);
         chestBone.add(this.scbaCylinder);
 
         // High-visibility safety vest
         this.ppeVest = createSafetyVest();
-        this.ppeVest.position.set(0, 0.085, 0.018);
+        this.ppeVest.scale.setScalar(1.20);
+        this.ppeVest.position.set(0, 0.150, 0.012);
         this.ppeVest.renderOrder = 2;
         this.ppeVest.visible = Boolean(this.ppeVisibility.vest);
         chestBone.add(this.ppeVest);
       }
 
       if (headBone) {
-        // SCBA full-face gas mask
+        // SCBA full-face gas mask: calibrated to human facial proportions
         this.scbaMask = createSCBAFaceMask();
-        this.scbaMask.position.set(0, 0.015, 0.110);
+        this.scbaMask.scale.setScalar(0.87);
+        this.scbaMask.position.set(0, -0.018, 0.120);
         this.scbaMask.renderOrder = 2;
         this.scbaMask.visible = Boolean(this.ppeVisibility.respirator);
         headBone.add(this.scbaMask);
 
+        // Apply any user calibration already queued
+        if (this.maskCalibration) {
+          this.setMaskCalibration(this.maskCalibration);
+        }
+
         // Safety hard hat helmet
         this.ppeHelmet = createSafetyHelmet();
-        this.ppeHelmet.position.set(0, 0.092, 0.005);
+        this.ppeHelmet.scale.setScalar(1.08);
+        this.ppeHelmet.position.set(0, 0.062, 0.010);
         this.ppeHelmet.renderOrder = 2;
         this.ppeHelmet.visible = Boolean(this.ppeVisibility.helmet);
         headBone.add(this.ppeHelmet);
@@ -343,6 +376,7 @@ export class Avatar {
       if (leftHandBone) {
         // Left protective gauntlet glove
         this.ppeGloveL = createProtectiveGloves("left");
+        this.ppeGloveL.scale.setScalar(1.22);
         this.ppeGloveL.position.set(0, 0, 0);
         this.ppeGloveL.renderOrder = 2;
         this.ppeGloveL.visible = Boolean(this.ppeVisibility.gloves);
@@ -352,6 +386,7 @@ export class Avatar {
       if (rightHandBone) {
         // Right protective gauntlet glove
         this.ppeGloveR = createProtectiveGloves("right");
+        this.ppeGloveR.scale.setScalar(1.22);
         this.ppeGloveR.position.set(0, 0, 0);
         this.ppeGloveR.renderOrder = 2;
         this.ppeGloveR.visible = Boolean(this.ppeVisibility.gloves);
@@ -511,7 +546,7 @@ export class Avatar {
       this.debugPosition.project(this.camera);
       if (this.debugPosition.z < -1 || this.debugPosition.z > 1) return;
       let x = ((this.debugPosition.x + 1) / 2) * stage.width;
-      if (this.renderMode === "camera") x = stage.width - x;
+      if (this.renderMode === "camera" || this.renderMode === "camera-avatar") x = stage.width - x;
       points[role] = {
         x,
         y: ((1 - this.debugPosition.y) / 2) * stage.height,
@@ -557,6 +592,26 @@ export class Avatar {
     }
   }
 
+  setSegmentationBounds(bounds) {
+    this.silhouetteBounds = bounds;
+  }
+
+  setMaskCalibration({ size = 1.0, offsetX = 0, offsetY = 0, depth = 0 } = {}) {
+    this.maskCalibration = { size, offsetX, offsetY, depth };
+    if (this.scbaMask) {
+      const baseScale = 0.87;
+      const effectiveScale = baseScale * size;
+      this.scbaMask.scale.setScalar(effectiveScale);
+      // In headBone local space: convert pixel sliders to meters
+      const pxToMeters = 0.0008;
+      this.scbaMask.position.set(
+        offsetX * pxToMeters,
+        -0.018 - offsetY * pxToMeters,
+        0.120 + depth * pxToMeters,
+      );
+    }
+  }
+
   resetCalibration() {
     this.calibratedPixelsPerMeter = null;
     this.lastDetectedDepth = 0;
@@ -590,25 +645,35 @@ export class Avatar {
       video,
       stage,
     );
-    const leftShoulder = mapVisibleLandmarkToStage(
+    let leftShoulder = mapVisibleLandmarkToStage(
       landmarks[LANDMARKS.leftShoulder],
       video,
       stage,
     );
-    const rightShoulder = mapVisibleLandmarkToStage(
+    let rightShoulder = mapVisibleLandmarkToStage(
       landmarks[LANDMARKS.rightShoulder],
       video,
       stage,
     );
-    const hasHipCenter = leftHip && rightHip;
-    const hasShoulderCenter = leftShoulder && rightShoulder;
-    const shoulderWidth =
+    // Boundary outlier rejection: reject joints clamped against screen borders
+    if (leftShoulder && (leftShoulder.y <= 12 || leftShoulder.x <= 12 || leftShoulder.x >= stage.width - 12)) {
+      leftShoulder = null;
+    }
+    if (rightShoulder && (rightShoulder.y <= 12 || rightShoulder.x <= 12 || rightShoulder.x >= stage.width - 12)) {
+      rightShoulder = null;
+    }
+    const hasHipCenter = Boolean(leftHip && rightHip);
+    const hasShoulderCenter = Boolean(leftShoulder && rightShoulder);
+    let shoulderWidth =
       hasShoulderCenter
         ? Math.hypot(
             leftShoulder.x - rightShoulder.x,
             leftShoulder.y - rightShoulder.y,
           )
         : 0;
+    if (shoulderWidth > stage.width * 0.55) {
+      shoulderWidth = this.lastDetectedShoulderWidth || stage.width * 0.28;
+    }
     const hipWidth = hasHipCenter
       ? Math.hypot(leftHip.x - rightHip.x, leftHip.y - rightHip.y)
       : 0;
@@ -625,7 +690,7 @@ export class Avatar {
       }
       return mapLandmarkToStage(landmark, video, stage, false);
     };
-    const imageNose = projectLandmark(0);
+    let imageNose = projectLandmark(0);
     const imageLeftAnkle = projectLandmark(27);
     const imageRightAnkle = projectLandmark(28);
     const imageLeftHip = projectLandmark(LANDMARKS.leftHip);
@@ -646,6 +711,12 @@ export class Avatar {
             y: (imageLeftShoulder.y + imageRightShoulder.y) / 2,
           }
         : null;
+
+    // Anatomical Outlier Rejection:
+    // In human anatomy, the nose cannot be below the shoulders or hips in an upright stance (screen y increases downward).
+    if (imageNose && imageShoulderCenter && imageNose.y > imageShoulderCenter.y + 0.02 * stage.height) {
+      imageNose = null;
+    }
     const ankleY =
       imageLeftAnkle && imageRightAnkle
         ? (imageLeftAnkle.y + imageRightAnkle.y) / 2
@@ -721,17 +792,34 @@ export class Avatar {
         ? ankleY - imageNose.y
         : 0;
 
-    if (detectedHeadToAnkle > 0 && this.modelHeadToAnkleHeight > 0.05) {
-      scale = detectedHeadToAnkle / this.modelHeadToAnkleHeight;
+    const ankleScale =
+      detectedHeadToAnkle > 0 && this.modelHeadToAnkleHeight > 0.05
+        ? detectedHeadToAnkle / this.modelHeadToAnkleHeight
+        : 0;
+    const shoulderScale =
+      unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0.02
+        ? unprojectedShoulderWidth / this.modelShoulderWidth
+        : 0;
+    const torsoScale =
+      unprojectedTorsoHeight > 0 && this.modelTorsoHeight > 0.02
+        ? unprojectedTorsoHeight / this.modelTorsoHeight
+        : 0;
+    const headScale =
+      headShoulderHeight > 0 && this.modelHeadShoulderHeight > 0.02
+        ? headShoulderHeight / this.modelHeadShoulderHeight
+        : 0;
+
+    if (ankleScale > 0) {
+      scale = ankleScale;
       this.lastScaleReference = "head-to-ankles";
-    } else if (unprojectedTorsoHeight > 0 && this.modelTorsoHeight > 0.02) {
-      scale = unprojectedTorsoHeight / this.modelTorsoHeight;
+    } else if (torsoScale > 0) {
+      scale = torsoScale;
       this.lastScaleReference = "torso height";
-    } else if (headShoulderHeight > 0 && this.modelHeadShoulderHeight > 0.02) {
-      scale = headShoulderHeight / this.modelHeadShoulderHeight;
+    } else if (headScale > 0) {
+      scale = headScale;
       this.lastScaleReference = "head-to-shoulders";
-    } else if (unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0.02) {
-      scale = unprojectedShoulderWidth / this.modelShoulderWidth;
+    } else if (shoulderScale > 0) {
+      scale = shoulderScale;
       this.lastScaleReference = "shoulder width";
     } else if (hipWidth > 0 && this.modelHipWidth > 0.02) {
       scale = hipWidth / this.modelHipWidth;
@@ -743,12 +831,18 @@ export class Avatar {
 
     scale = Math.max(scale, 20);
 
+    // Anchor scale: prevent sudden size breathing or contracting in profile turns
+    if (this.lastStableScale && Number.isFinite(this.lastStableScale) && this.lastStableScale > 20) {
+      scale = THREE.MathUtils.clamp(scale, this.lastStableScale * 0.94, this.lastStableScale * 1.06);
+    }
+    this.lastStableScale = scale;
+
     // Anatomical width scaling: fit the human's shoulder width naturally without distortion
-    const shoulderScale =
-      unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0
-        ? unprojectedShoulderWidth / this.modelShoulderWidth
-        : scale;
-    const widthFactor = THREE.MathUtils.clamp(shoulderScale / scale, 0.85, 1.25);
+    let widthFactor = 1.0;
+    if (shoulderWidth >= 0.12 && Math.abs(yaw) < 0.7 && unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0) {
+      const rawShoulderScale = unprojectedShoulderWidth / this.modelShoulderWidth;
+      widthFactor = THREE.MathUtils.clamp(rawShoulderScale / scale, 0.90, 1.15);
+    }
 
     // Adaptive filtering on scale and widthFactor to eliminate size flicker & breathing
     const filteredScale = this.scaleFilter.filter(scale, delta);
@@ -796,7 +890,7 @@ export class Avatar {
         : 0;
 
     if (this.renderMode === "environment") {
-      const targetScale = (scaleY / stage.height) * visibleHeight * this.userScaleMultiplier;
+      const targetScale = (scaleY / stage.height) * visibleHeight * this.userScaleMultiplier * 1.0;
       this.scaleTarget.setScalar(targetScale);
       this.positionTarget.set(
         ((originX / stage.width) * 2 - 1) * this.camera.aspect * (visibleHeight / 2) * 0.85,
@@ -807,8 +901,9 @@ export class Avatar {
       // In camera mode: cancel out perspective projection factor so the model projects
       // to EXACTLY (originX, originY) on screen at ANY depth!
       const perspectiveFactor = Math.max((1000 - targetDepth) / 1000, 0.2);
-      const finalScaleX = scaleX * perspectiveFactor * this.userScaleMultiplier;
-      const finalScaleY = scaleY * perspectiveFactor * this.userScaleMultiplier;
+      const modelScaleBoost = 1.0;
+      const finalScaleX = scaleX * perspectiveFactor * this.userScaleMultiplier * modelScaleBoost;
+      const finalScaleY = scaleY * perspectiveFactor * this.userScaleMultiplier * modelScaleBoost;
       this.scaleTarget.set(finalScaleX, finalScaleY, finalScaleX);
 
       this.positionTarget.set(
@@ -818,13 +913,14 @@ export class Avatar {
       );
     }
 
-    // 7. Responsive continuous time-based smoothing
-    let posAlpha = 1 - Math.exp(-26 * delta);
-    let scaleAlpha = 1 - Math.exp(-22 * delta);
+    // 7. Responsive continuous time-based smoothing with rapid fast-movement tracking
+    let posAlpha = 1 - Math.exp(-24 * delta);
+    let scaleAlpha = 1 - Math.exp(-20 * delta);
 
     const posDist = this.group.position.distanceTo(this.positionTarget);
-    const boost = THREE.MathUtils.clamp((posDist - 10) / 40, 0, 0.4);
-    posAlpha = THREE.MathUtils.clamp(posAlpha + boost, 0.15, 0.95);
+    // When moving quickly (>20px shift), increase responsiveness so mask stays locked to the face
+    const boost = THREE.MathUtils.clamp((posDist - 20) / 40, 0, 0.65);
+    posAlpha = THREE.MathUtils.clamp(posAlpha + boost, 0.20, 0.95);
 
     this.group.scale.lerp(this.scaleTarget, scaleAlpha);
     this.group.position.lerp(this.positionTarget, posAlpha);
@@ -841,7 +937,7 @@ export class Avatar {
       return;
     }
     this.camera.aspect = width / height;
-    if (this.renderMode === "camera") {
+    if (this.renderMode === "camera" || this.renderMode === "camera-avatar") {
       this.camera.fov = (2 * Math.atan(height / (2 * this.camera.position.z)) * 180) / Math.PI;
     }
     this.camera.updateProjectionMatrix();

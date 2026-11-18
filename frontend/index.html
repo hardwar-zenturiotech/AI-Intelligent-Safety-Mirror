@@ -80,7 +80,8 @@
             <label class="mode-control" for="renderMode">
               <span>Rendering mode</span>
               <select id="renderMode">
-                <option value="camera">Live camera + avatar</option>
+                <option value="camera" selected>Live camera + PPE overlay (AR)</option>
+                <option value="camera-avatar">Live camera + 3D human avatar</option>
                 <option value="environment">3D environment</option>
               </select>
             </label>
@@ -274,7 +275,7 @@
                 <span class="equipment-icon" aria-hidden="true">R</span>
                 <span class="equipment-copy">
                   <strong>Respirator</strong>
-                  <span>Gas mask overlay</span>
+                  <span>Gas mask &amp; SCBA pack</span>
                 </span>
                 <span class="equipment-check" aria-hidden="true"></span>
               </button>
@@ -283,8 +284,8 @@
             <div class="notice">
               <span class="notice-icon" aria-hidden="true">i</span>
               <p>
-                Face tracking runs locally in the browser and positions the SCBA
-                mask over the detected face.
+                Face tracking and 3D pose retargeting position the SCBA mask on the face
+                and the SCBA compressed air cylinder apparatus on the back.
               </p>
             </div>
           </aside>
@@ -294,7 +295,7 @@
           <div class="panel-heading">
             <div>
               <p class="eyebrow">3D ASSET</p>
-              <h2 id="modelTitle">SCBA mask model</h2>
+              <h2 id="modelTitle">SCBA Kit (Mask &amp; Cylinder)</h2>
             </div>
             <span class="model-status" id="modelStatus" role="status" aria-live="polite">
               LOADING MODEL

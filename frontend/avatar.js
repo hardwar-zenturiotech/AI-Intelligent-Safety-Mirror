@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { mapLandmarkToStage } from "./camera.js";
 import { isLandmarkUsable } from "./poseTracker.js";
 import { MotionRetargeter, getRigReport, inspectHumanoidRig } from "./retargeting.js";
+import { createSCBACylinderApparatus, createSCBAFaceMask } from "./scbaApparatus.js";
 
 const LANDMARKS = { leftHip: 23, rightHip: 24, leftShoulder: 11, rightShoulder: 12 };
 
@@ -166,6 +167,10 @@ export class Avatar {
     this.originFilter = new AdaptivePointFilter(1.5, 6.0);
     this.scaleFilter = new AdaptiveScalarFilter(1.2, 5.0);
     this.widthFactorFilter = new AdaptiveScalarFilter(1.2, 5.0);
+    this.scbaVisible = false;
+    this.scbaCylinder = null;
+    this.scbaMask = null;
+    this.avatarBodyMode = "occluder";
     this.lastTime = performance.now();
     this.frameCount = 0;
     this.fpsTime = this.lastTime;
@@ -264,12 +269,56 @@ export class Avatar {
       this.skeletonHelper.visible = false;
       this.scene.add(this.skeletonHelper);
       this.createCalibrationHelpers(rig.mapping);
+
+      // Attach SCBA Face Mask and SCBA Back Cylinder Apparatus to the rig
+      const chestBone = rig.mapping.chest || rig.mapping.spine;
+      const headBone = rig.mapping.head;
+      if (chestBone) {
+        this.scbaCylinder = createSCBACylinderApparatus();
+        // Snugly on the upper back/spine surface
+        this.scbaCylinder.position.set(0, -0.06, -0.075);
+        this.scbaCylinder.renderOrder = 2;
+        this.scbaCylinder.visible = this.scbaVisible;
+        chestBone.add(this.scbaCylinder);
+      }
+      if (headBone) {
+        this.scbaMask = createSCBAFaceMask();
+        // Positioned over the front face
+        this.scbaMask.position.set(0, 0.015, 0.115);
+        this.scbaMask.renderOrder = 2;
+        this.scbaMask.visible = this.scbaVisible;
+        headBone.add(this.scbaMask);
+      }
+
+      this.setAvatarBodyMode(this.avatarBodyMode);
       this.report = report;
       this.onStatus({ state: "ready", ...report });
     } catch (error) {
       this.onStatus({ state: "error", message: error.message, ...(this.report || {}) });
       console.error("Could not load a usable humanoid avatar.", error);
     }
+  }
+
+  setAvatarBodyMode(mode) {
+    this.avatarBodyMode = mode; // "visible" | "occluder" | "hidden"
+    if (!this.model) return;
+    this.model.traverse((obj) => {
+      if (obj.isSkinnedMesh) {
+        if (mode === "occluder") {
+          obj.visible = true;
+          obj.material.colorWrite = false;
+          obj.material.depthWrite = true;
+          obj.renderOrder = 0;
+        } else if (mode === "visible") {
+          obj.visible = true;
+          obj.material.colorWrite = true;
+          obj.material.depthWrite = true;
+          obj.renderOrder = 1;
+        } else if (mode === "hidden") {
+          obj.visible = false;
+        }
+      }
+    });
   }
 
   setRenderMode(mode) {
@@ -282,7 +331,8 @@ export class Avatar {
       this.camera.position.z = 3.2;
       this.camera.near = 0.01;
       this.camera.far = 100;
-    } else {
+      this.setAvatarBodyMode("visible");
+    } else if (mode === "camera-avatar") {
       this.scene.background = null;
       if (this.environmentGrid) {
         this.environmentGrid.visible = false;
@@ -290,6 +340,17 @@ export class Avatar {
       this.camera.position.z = 1000;
       this.camera.near = 0.1;
       this.camera.far = 5000;
+      this.setAvatarBodyMode("visible");
+    } else {
+      // Default "camera" mode: AR PPE equipment overlay, 3D body acts as invisible depth occluder
+      this.scene.background = null;
+      if (this.environmentGrid) {
+        this.environmentGrid.visible = false;
+      }
+      this.camera.position.z = 1000;
+      this.camera.near = 0.1;
+      this.camera.far = 5000;
+      this.setAvatarBodyMode("occluder");
     }
     this.camera.updateProjectionMatrix();
     this.resize();
@@ -300,6 +361,16 @@ export class Avatar {
       this.skeletonHelper.visible = avatarSkeleton;
     }
     this.showJointPositions = jointPositions;
+  }
+
+  setSCBAVisible(visible) {
+    this.scbaVisible = Boolean(visible);
+    if (this.scbaCylinder) {
+      this.scbaCylinder.visible = this.scbaVisible;
+    }
+    if (this.scbaMask) {
+      this.scbaMask.visible = this.scbaVisible;
+    }
   }
 
   createCalibrationHelpers(mapping) {

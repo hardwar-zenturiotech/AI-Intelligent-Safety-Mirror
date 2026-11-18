@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { Avatar } from "./avatar.js";
+import { createSCBACylinderApparatus } from "./scbaApparatus.js";
 import { mapLandmarkToStage, requestCameraStream } from "./camera.js";
 import {
   PoseTracker,
@@ -924,9 +925,10 @@ showRetargetingDebug.addEventListener("change", () => {
 });
 
 renderMode.addEventListener("change", () => {
-  const environmentMode = renderMode.value === "environment";
+  const mode = renderMode.value;
+  const environmentMode = mode === "environment";
   cameraStage.classList.toggle("is-environment", environmentMode);
-  avatar.setRenderMode(environmentMode ? "environment" : "camera");
+  avatar.setRenderMode(mode);
 });
 
 function isRespiratorActive() {
@@ -963,6 +965,7 @@ resetAvatarCalibration.addEventListener("click", () => {
 
 updateCalibration();
 updateAvatarSliders();
+avatar.setSCBAVisible(isRespiratorActive());
 
 equipmentItems.forEach((item) => {
   item.addEventListener("click", () => {
@@ -976,6 +979,7 @@ equipmentItems.forEach((item) => {
 
     if (item === respiratorToggle || item.dataset.equipment === "respirator") {
       const active = item.getAttribute("aria-pressed") === "true";
+      avatar.setSCBAVisible(active);
       if (!active) {
         if (maskOverlayModel) {
           maskOverlayModel.visible = false;
@@ -989,11 +993,11 @@ equipmentItems.forEach((item) => {
         maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
         if (cameraStream) {
           cameraMessage.textContent =
-            "Gas mask overlay disabled (Respirator unselected in PPE checklist).";
+            "SCBA kit overlay disabled (Respirator unselected in PPE checklist).";
         }
       } else if (cameraStream) {
         cameraMessage.textContent =
-          "Gas mask overlay enabled (Respirator selected in PPE checklist).";
+          "SCBA kit overlay enabled (Respirator selected in PPE checklist).";
       }
     }
   });
@@ -1554,13 +1558,26 @@ function initModelViewer() {
 
       const center = bounds.getCenter(new THREE.Vector3());
       const viewerModel = new THREE.Group();
+
+      // SCBA Face Mask (front view)
+      const viewerMask = new THREE.Group();
       const viewerContent = model.clone(true);
       viewerContent.position.sub(center);
-      viewerModel.add(viewerContent);
-      viewerModel.scale.setScalar(2.4 / largestDimension);
+      viewerMask.add(viewerContent);
+      viewerMask.scale.setScalar(1.9 / largestDimension);
+      viewerMask.position.set(-0.75, 0, 0);
+      viewerModel.add(viewerMask);
+
+      // SCBA Back Cylinder Apparatus (angled showcase view)
+      const viewerCylinder = createSCBACylinderApparatus();
+      viewerCylinder.scale.setScalar(2.4);
+      viewerCylinder.position.set(0.75, -0.05, 0);
+      viewerCylinder.rotation.y = Math.PI * 0.85;
+      viewerModel.add(viewerCylinder);
+
       scene.add(viewerModel);
 
-      modelStatus.textContent = "MODEL LOADED";
+      modelStatus.textContent = "SCBA KIT LOADED";
       modelMessage.hidden = true;
       resetModelView.disabled = false;
       resetView();

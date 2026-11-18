@@ -11,6 +11,11 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+try:
+    from src.scba_tracking import calculate_scba_anchor
+except ImportError:
+    from scba_tracking import calculate_scba_anchor
+
 
 CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 7),
@@ -151,11 +156,16 @@ def main() -> int:
 
                 result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
+                scba_status = ""
                 if result.pose_landmarks:
                     for pose in result.pose_landmarks:
                         draw_pose(frame, pose)
                     status = "PERSON DETECTED"
                     status_colour = (0, 220, 100)
+                    if result.pose_world_landmarks:
+                        anchor = calculate_scba_anchor(result.pose_world_landmarks[0])
+                        if anchor is not None:
+                            scba_status = "SCBA CYLINDER ANCHOR: ATTACHED"
                 else:
                     status = "WAITING FOR PERSON"
                     status_colour = (0, 180, 255)
@@ -172,6 +182,11 @@ def main() -> int:
                     frame, f"FPS: {fps:.1f}", (20, 72),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2,
                 )
+                if scba_status:
+                    cv2.putText(
+                        frame, scba_status, (20, 104),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2,
+                    )
                 cv2.putText(
                     frame, "Press Q or Ctrl+Q to quit", (20, frame.shape[0] - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1,

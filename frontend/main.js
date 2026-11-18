@@ -240,22 +240,37 @@ function renderCompositeRecordingFrame() {
   recordingCtx.fillStyle = "#141b1c";
   recordingCtx.fillRect(0, 0, w, h);
 
-  // Draw Camera Feed
+  // Draw Camera Feed with cover-fit matching live preview exactly
   if (cameraPreview && cameraPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    const videoW = cameraPreview.videoWidth || w;
+    const videoH = cameraPreview.videoHeight || h;
+    const videoScale = Math.max(w / videoW, h / videoH);
+    const drawW = videoW * videoScale;
+    const drawH = videoH * videoScale;
+    const drawX = (w - drawW) / 2;
+    const drawY = (h - drawH) / 2;
+
     recordingCtx.save();
-    // In camera mode, mirror horizontally to match the mirror preview
     if (renderMode.value !== "environment") {
       recordingCtx.translate(w, 0);
       recordingCtx.scale(-1, 1);
     }
-    recordingCtx.drawImage(cameraPreview, 0, 0, w, h);
+    recordingCtx.drawImage(cameraPreview, drawX, drawY, drawW, drawH);
     recordingCtx.restore();
   }
 
   // Draw 3D Avatar (if loaded and active)
   const avatarCanvas = avatar?.renderer?.domElement;
   if (avatarCanvas && avatarCanvas.width > 0 && avatarCanvas.height > 0) {
-    recordingCtx.drawImage(avatarCanvas, 0, 0, w, h);
+    if (renderMode.value !== "environment") {
+      recordingCtx.save();
+      recordingCtx.translate(w, 0);
+      recordingCtx.scale(-1, 1);
+      recordingCtx.drawImage(avatarCanvas, 0, 0, w, h);
+      recordingCtx.restore();
+    } else {
+      recordingCtx.drawImage(avatarCanvas, 0, 0, w, h);
+    }
   }
 
   // Draw Gas Mask overlay (if respirator selected and visible)
@@ -343,38 +358,61 @@ function startRecording() {
     "video/mp4",
   ].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
 
-  // Set up composite recording canvas
+  // Set up composite recording canvas matching live stage aspect ratio
   const stage = cameraStage.getBoundingClientRect();
-  const width = cameraPreview.videoWidth || Math.round(stage.width) || 1280;
-  const height = cameraPreview.videoHeight || Math.round(stage.height) || 720;
+  const stageWidth = Math.round(stage.width) || 1280;
+  const stageHeight = Math.round(stage.height) || 720;
+  const aspect = stageWidth / stageHeight;
+  const targetH = Math.max(720, Math.min(1080, stageHeight));
+  const width = Math.round(targetH * aspect);
+  const height = targetH;
 
   if (!recordingCanvas) {
     recordingCanvas = document.createElement("canvas");
   }
   recordingCanvas.width = width;
   recordingCanvas.height = height;
-  recordingCtx = recordingCanvas.getContext("2d");
+  recordingCtx = recordingCanvas.getContext("2d", { alpha: false, desynchronized: true }) || recordingCanvas.getContext("2d");
+  if (recordingCtx) {
+    recordingCtx.imageSmoothingEnabled = true;
+    recordingCtx.imageSmoothingQuality = "high";
+  }
 
   let recordingStream;
   try {
-    recordingStream = recordingCanvas.captureStream(30);
-  } catch (error) {
-    console.warn("Canvas captureStream failed; falling back to direct camera stream.", error);
-    recordingStream = cameraStream.clone();
+    recordingStream = recordingCanvas.captureStream(60);
+  } catch {
+    try {
+      recordingStream = recordingCanvas.captureStream(30);
+    } catch (error) {
+      console.warn("Canvas captureStream failed; falling back to direct camera stream.", error);
+      recordingStream = cameraStream.clone();
+    }
+  }
+
+  const recorderOptions = {
+    videoBitsPerSecond: 6_000_000,
+  };
+  if (mimeType) {
+    recorderOptions.mimeType = mimeType;
   }
 
   let recorder;
   try {
-    recorder = mimeType
-      ? new MediaRecorder(recordingStream, { mimeType })
-      : new MediaRecorder(recordingStream);
-  } catch (error) {
-    if (recordingFrameId) {
-      cancelAnimationFrame(recordingFrameId);
-      recordingFrameId = null;
+    recorder = new MediaRecorder(recordingStream, recorderOptions);
+  } catch {
+    try {
+      recorder = mimeType
+        ? new MediaRecorder(recordingStream, { mimeType })
+        : new MediaRecorder(recordingStream);
+    } catch (error) {
+      if (recordingFrameId) {
+        cancelAnimationFrame(recordingFrameId);
+        recordingFrameId = null;
+      }
+      recordingStream.getTracks().forEach((track) => track.stop());
+      throw new Error(`Could not start recording: ${error.message}`);
     }
-    recordingStream.getTracks().forEach((track) => track.stop());
-    throw new Error(`Could not start recording: ${error.message}`);
   }
 
   let recordingError = null;
@@ -1065,7 +1103,11 @@ async function initializeMaskOverlay() {
 
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+    });
   } catch (error) {
     throw new Error("3D overlay is unavailable in this browser.", { cause: error });
   }
@@ -1447,7 +1489,11 @@ function trackFaceFrame() {
 function initModelViewer() {
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+    });
   } catch (error) {
     showModelError("3D preview is unavailable in this browser.", error);
     return;

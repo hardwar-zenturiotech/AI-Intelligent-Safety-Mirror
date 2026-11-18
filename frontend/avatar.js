@@ -103,7 +103,11 @@ export class Avatar {
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
     this.camera.position.z = 1000;
     try {
-      this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      this.renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true,
+      });
     } catch (error) {
       this.unavailable = true;
       this.onStatus({
@@ -657,14 +661,13 @@ export class Avatar {
       );
     }
 
-    // 7. Responsive time-based smoothing
-    let posAlpha = 1 - Math.exp(-28 * delta);
-    let scaleAlpha = 1 - Math.exp(-24 * delta);
+    // 7. Responsive continuous time-based smoothing
+    let posAlpha = 1 - Math.exp(-26 * delta);
+    let scaleAlpha = 1 - Math.exp(-22 * delta);
 
     const posDist = this.group.position.distanceTo(this.positionTarget);
-    if (posDist > 30) {
-      posAlpha = Math.min(1.0, posAlpha + 0.35);
-    }
+    const boost = THREE.MathUtils.clamp((posDist - 10) / 40, 0, 0.4);
+    posAlpha = THREE.MathUtils.clamp(posAlpha + boost, 0.15, 0.95);
 
     this.group.scale.lerp(this.scaleTarget, scaleAlpha);
     this.group.position.lerp(this.positionTarget, posAlpha);

@@ -3,7 +3,13 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { mapLandmarkToStage } from "./camera.js";
 import { isLandmarkUsable } from "./poseTracker.js";
 import { MotionRetargeter, getRigReport, inspectHumanoidRig } from "./retargeting.js";
-import { createSCBACylinderApparatus, createSCBAFaceMask } from "./scbaApparatus.js";
+import {
+  createSCBACylinderApparatus,
+  createSCBAFaceMask,
+  createSafetyHelmet,
+  createSafetyVest,
+  createProtectiveGloves,
+} from "./scbaApparatus.js";
 
 const LANDMARKS = { leftHip: 23, rightHip: 24, leftShoulder: 11, rightShoulder: 12 };
 
@@ -28,7 +34,7 @@ function mapVisibleLandmarkToStage(landmark, video, stage) {
 }
 
 class AdaptiveScalarFilter {
-  constructor(minCutoff = 1.0, beta = 4.0) {
+  constructor(minCutoff = 0.6, beta = 4.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.current = 0;
@@ -47,11 +53,13 @@ class AdaptiveScalarFilter {
     }
 
     const diff = Math.abs(this.current - target);
-    const speed = deltaSeconds > 0 ? diff / deltaSeconds : 0;
+    // Subtle deadband on micro-scale fluctuations to stop size breathing
+    const effectiveDiff = diff > 0.006 * Math.abs(this.current) ? diff : diff * 0.2;
+    const speed = deltaSeconds > 0 ? effectiveDiff / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
       1 - Math.exp(-2 * Math.PI * cutoff * deltaSeconds),
-      0.06,
+      0.04,
       1.0,
     );
 
@@ -61,7 +69,7 @@ class AdaptiveScalarFilter {
 }
 
 class AdaptivePointFilter {
-  constructor(minCutoff = 1.2, beta = 5.0) {
+  constructor(minCutoff = 0.8, beta = 5.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.currentX = 0;
@@ -82,11 +90,13 @@ class AdaptivePointFilter {
     }
 
     const dist = Math.hypot(targetX - this.currentX, targetY - this.currentY);
-    const speed = deltaSeconds > 0 ? dist / deltaSeconds : 0;
+    // Deadband on sub-pixel micro-jitter to prevent shivering while standing still
+    const effectiveDist = dist > 1.2 ? dist - 1.2 : dist * 0.15;
+    const speed = deltaSeconds > 0 ? effectiveDist / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
       1 - Math.exp(-2 * Math.PI * cutoff * deltaSeconds),
-      0.06,
+      0.04,
       1.0,
     );
 
@@ -164,12 +174,22 @@ export class Avatar {
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
     this.calibrationDebugVisible = false;
-    this.originFilter = new AdaptivePointFilter(1.5, 6.0);
-    this.scaleFilter = new AdaptiveScalarFilter(1.2, 5.0);
-    this.widthFactorFilter = new AdaptiveScalarFilter(1.2, 5.0);
+    this.originFilter = new AdaptivePointFilter(0.8, 5.0);
+    this.scaleFilter = new AdaptiveScalarFilter(0.6, 4.0);
+    this.widthFactorFilter = new AdaptiveScalarFilter(0.6, 4.0);
     this.scbaVisible = false;
     this.scbaCylinder = null;
     this.scbaMask = null;
+    this.ppeHelmet = null;
+    this.ppeVest = null;
+    this.ppeGloveL = null;
+    this.ppeGloveR = null;
+    this.ppeVisibility = {
+      helmet: false,
+      vest: false,
+      gloves: false,
+      respirator: false,
+    };
     this.avatarBodyMode = "occluder";
     this.lastTime = performance.now();
     this.frameCount = 0;
@@ -211,24 +231,36 @@ export class Avatar {
         throw new Error("No Hips/Pelvis bone was detected in the humanoid skeleton.");
       }
 
-      const normalization = new THREE.Group();
-      normalization.add(this.model);
-      this.group.add(normalization);
-      normalization.updateMatrixWorld(true);
-      const hipPosition = hips.getWorldPosition(new THREE.Vector3());
-      normalization.scale.setScalar(1 / size.y);
-      normalization.position.set(
-        -hipPosition.x / size.y,
-        -hipPosition.y / size.y,
-        -hipPosition.z / size.y,
-      );
-      normalization.updateMatrixWorld(true);
-      this.modelHipHeight = hips.getWorldPosition(new THREE.Vector3()).y;
       // Glenohumeral shoulder joints (upper arm pivots) correspond directly to MediaPipe landmarks 11 & 12
       const leftUpperArm = rig.mapping.leftUpperArm;
       const rightUpperArm = rig.mapping.rightUpperArm;
       const leftShoulderJoint = leftUpperArm || rig.anchors.leftShoulder;
       const rightShoulderJoint = rightUpperArm || rig.anchors.rightShoulder;
+
+      // Find shoulder center in unscaled model coordinates
+      this.model.updateMatrixWorld(true);
+      const shoulderCenter = new THREE.Vector3();
+      if (leftShoulderJoint && rightShoulderJoint) {
+        const leftP = leftShoulderJoint.getWorldPosition(new THREE.Vector3());
+        const rightP = rightShoulderJoint.getWorldPosition(new THREE.Vector3());
+        shoulderCenter.addVectors(leftP, rightP).multiplyScalar(0.5);
+      } else {
+        shoulderCenter.copy(hips.getWorldPosition(new THREE.Vector3()));
+      }
+
+      const normalization = new THREE.Group();
+      normalization.add(this.model);
+      this.group.add(normalization);
+      normalization.scale.setScalar(1 / size.y);
+      // Pivot normalization at the shoulder center: rotating or turning profile pivots around the neck/shoulders,
+      // completely eliminating the 50cm arc swing that previously threw the head/helmet off to the side!
+      normalization.position.set(
+        -shoulderCenter.x / size.y,
+        -shoulderCenter.y / size.y,
+        -shoulderCenter.z / size.y,
+      );
+      normalization.updateMatrixWorld(true);
+      this.modelHipHeight = hips.getWorldPosition(new THREE.Vector3()).y;
       if (leftShoulderJoint && rightShoulderJoint) {
         const leftShoulder = leftShoulderJoint.getWorldPosition(new THREE.Vector3());
         const rightShoulder = rightShoulderJoint.getWorldPosition(new THREE.Vector3());
@@ -270,24 +302,60 @@ export class Avatar {
       this.scene.add(this.skeletonHelper);
       this.createCalibrationHelpers(rig.mapping);
 
-      // Attach SCBA Face Mask and SCBA Back Cylinder Apparatus to the rig
+      // Attach 3D PPE items to the humanoid skeleton
       const chestBone = rig.mapping.chest || rig.mapping.spine;
       const headBone = rig.mapping.head;
+      const leftHandBone = rig.mapping.leftHand;
+      const rightHandBone = rig.mapping.rightHand;
+
       if (chestBone) {
+        // SCBA back air cylinder apparatus
         this.scbaCylinder = createSCBACylinderApparatus();
-        // Snugly on the upper back/spine surface
-        this.scbaCylinder.position.set(0, -0.06, -0.075);
+        this.scbaCylinder.position.set(0, -0.05, -0.11);
         this.scbaCylinder.renderOrder = 2;
-        this.scbaCylinder.visible = this.scbaVisible;
+        this.scbaCylinder.visible = Boolean(this.ppeVisibility.respirator);
         chestBone.add(this.scbaCylinder);
+
+        // High-visibility safety vest
+        this.ppeVest = createSafetyVest();
+        this.ppeVest.position.set(0, 0.085, 0.018);
+        this.ppeVest.renderOrder = 2;
+        this.ppeVest.visible = Boolean(this.ppeVisibility.vest);
+        chestBone.add(this.ppeVest);
       }
+
       if (headBone) {
+        // SCBA full-face gas mask
         this.scbaMask = createSCBAFaceMask();
-        // Positioned over the front face
-        this.scbaMask.position.set(0, 0.015, 0.115);
+        this.scbaMask.position.set(0, 0.015, 0.110);
         this.scbaMask.renderOrder = 2;
-        this.scbaMask.visible = this.scbaVisible;
+        this.scbaMask.visible = Boolean(this.ppeVisibility.respirator);
         headBone.add(this.scbaMask);
+
+        // Safety hard hat helmet
+        this.ppeHelmet = createSafetyHelmet();
+        this.ppeHelmet.position.set(0, 0.092, 0.005);
+        this.ppeHelmet.renderOrder = 2;
+        this.ppeHelmet.visible = Boolean(this.ppeVisibility.helmet);
+        headBone.add(this.ppeHelmet);
+      }
+
+      if (leftHandBone) {
+        // Left protective gauntlet glove
+        this.ppeGloveL = createProtectiveGloves("left");
+        this.ppeGloveL.position.set(0, 0, 0);
+        this.ppeGloveL.renderOrder = 2;
+        this.ppeGloveL.visible = Boolean(this.ppeVisibility.gloves);
+        leftHandBone.add(this.ppeGloveL);
+      }
+
+      if (rightHandBone) {
+        // Right protective gauntlet glove
+        this.ppeGloveR = createProtectiveGloves("right");
+        this.ppeGloveR.position.set(0, 0, 0);
+        this.ppeGloveR.renderOrder = 2;
+        this.ppeGloveR.visible = Boolean(this.ppeVisibility.gloves);
+        rightHandBone.add(this.ppeGloveR);
       }
 
       this.setAvatarBodyMode(this.avatarBodyMode);
@@ -304,18 +372,26 @@ export class Avatar {
     if (!this.model) return;
     this.model.traverse((obj) => {
       if (obj.isSkinnedMesh) {
-        if (mode === "occluder") {
-          obj.visible = true;
-          obj.material.colorWrite = false;
-          obj.material.depthWrite = true;
-          obj.renderOrder = 0;
-        } else if (mode === "visible") {
-          obj.visible = true;
-          obj.material.colorWrite = true;
-          obj.material.depthWrite = true;
-          obj.renderOrder = 1;
-        } else if (mode === "hidden") {
-          obj.visible = false;
+        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const mat of materials) {
+          if (!mat) continue;
+          if (mode === "occluder") {
+            obj.visible = true;
+            mat.colorWrite = false;
+            mat.depthWrite = true;
+            mat.polygonOffset = true;
+            mat.polygonOffsetFactor = 2.0;
+            mat.polygonOffsetUnits = 2.0;
+            obj.renderOrder = 0;
+          } else if (mode === "visible") {
+            obj.visible = true;
+            mat.colorWrite = true;
+            mat.depthWrite = true;
+            mat.polygonOffset = false;
+            obj.renderOrder = 1;
+          } else if (mode === "hidden") {
+            obj.visible = false;
+          }
         }
       }
     });
@@ -325,6 +401,7 @@ export class Avatar {
     this.renderMode = mode;
     if (mode === "environment") {
       this.scene.background = new THREE.Color("#141b1c");
+      this.renderer.setClearColor(0x141b1c, 1);
       if (this.environmentGrid) {
         this.environmentGrid.visible = true;
       }
@@ -334,6 +411,7 @@ export class Avatar {
       this.setAvatarBodyMode("visible");
     } else if (mode === "camera-avatar") {
       this.scene.background = null;
+      this.renderer.setClearColor(0x000000, 0);
       if (this.environmentGrid) {
         this.environmentGrid.visible = false;
       }
@@ -344,6 +422,7 @@ export class Avatar {
     } else {
       // Default "camera" mode: AR PPE equipment overlay, 3D body acts as invisible depth occluder
       this.scene.background = null;
+      this.renderer.setClearColor(0x000000, 0);
       if (this.environmentGrid) {
         this.environmentGrid.visible = false;
       }
@@ -363,14 +442,25 @@ export class Avatar {
     this.showJointPositions = jointPositions;
   }
 
+  setPPEItemVisible(type, visible) {
+    const isVis = Boolean(visible);
+    this.ppeVisibility[type] = isVis;
+    if (type === "helmet" && this.ppeHelmet) {
+      this.ppeHelmet.visible = isVis;
+    } else if (type === "vest" && this.ppeVest) {
+      this.ppeVest.visible = isVis;
+    } else if (type === "gloves") {
+      if (this.ppeGloveL) this.ppeGloveL.visible = isVis;
+      if (this.ppeGloveR) this.ppeGloveR.visible = isVis;
+    } else if (type === "respirator") {
+      this.scbaVisible = isVis;
+      if (this.scbaCylinder) this.scbaCylinder.visible = isVis;
+      if (this.scbaMask) this.scbaMask.visible = isVis;
+    }
+  }
+
   setSCBAVisible(visible) {
-    this.scbaVisible = Boolean(visible);
-    if (this.scbaCylinder) {
-      this.scbaCylinder.visible = this.scbaVisible;
-    }
-    if (this.scbaMask) {
-      this.scbaMask.visible = this.scbaVisible;
-    }
+    this.setPPEItemVisible("respirator", visible);
   }
 
   createCalibrationHelpers(mapping) {
@@ -618,8 +708,8 @@ export class Avatar {
     // 2. Unproject 2D foreshortening using detected torso yaw/pitch so the avatar doesn't collapse when turning
     const yaw = this.retargeter?.diagnostics.torsoYaw || 0;
     const pitch = this.retargeter?.diagnostics.torsoPitch || 0;
-    const cosYaw = Math.max(Math.abs(Math.cos(yaw)), 0.35);
-    const cosPitch = Math.max(Math.abs(Math.cos(pitch)), 0.35);
+    const cosYaw = Math.max(Math.abs(Math.cos(yaw)), 0.65);
+    const cosPitch = Math.max(Math.abs(Math.cos(pitch)), 0.65);
 
     const unprojectedShoulderWidth = shoulderWidth / cosYaw;
     const unprojectedTorsoHeight = torsoHeight / cosPitch;
@@ -676,26 +766,22 @@ export class Avatar {
     }
     this.lastDetectedDepth = targetDepth;
 
-    // 5. Calculate screen anchor position (originX, originY) for the avatar Hips root
+    // 5. Calculate screen anchor position (originX, originY) for the avatar shoulder root
     let originX = stage.width / 2;
     let originY = stage.height / 2;
 
-    if (hasShoulderCenter && hasHipCenter) {
-      // Both shoulders and hips visible: center torso horizontally and align vertical torso span
-      originX = (imageShoulderCenter.x + imageHipCenter.x) / 2;
-      originY = (imageShoulderCenter.y + imageHipCenter.y) / 2 + (scaleY * this.modelTorsoHeight) / 2;
-    } else if (hasShoulderCenter) {
-      // Hips out of frame (sitting or waist-up): anchor directly below shoulders
+    if (hasShoulderCenter) {
+      // Anchoring directly on shoulder center stabilizes upper body PPE (vest, helmet, mask)
       originX = imageShoulderCenter.x;
-      originY = imageShoulderCenter.y + scaleY * this.modelShoulderHeight;
+      originY = imageShoulderCenter.y;
     } else if (hasHipCenter) {
-      // Shoulders out of frame: anchor directly at hips
+      // Shoulders out of frame: anchor relative to hips
       originX = imageHipCenter.x;
-      originY = imageHipCenter.y;
+      originY = imageHipCenter.y - scaleY * this.modelTorsoHeight;
     } else if (imageNose) {
-      // Only head/face visible: anchor directly below head
+      // Only head/face visible: anchor relative to nose
       originX = imageNose.x;
-      originY = imageNose.y + scaleY * (this.modelHeadHeight || 0.38);
+      originY = imageNose.y + scaleY * this.modelHeadShoulderHeight;
     }
 
     // Adaptive filtering on screen anchor to eliminate jitter while standing still
@@ -782,6 +868,9 @@ export class Avatar {
       this.fpsTime = now;
     }
     this.renderer?.render(this.scene, this.camera);
+    if (this.onPostRender) {
+      this.onPostRender();
+    }
   }
 
   close() {

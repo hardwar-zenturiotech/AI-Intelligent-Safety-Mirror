@@ -275,16 +275,15 @@ h2 {
   height: 100%;
   object-fit: cover;
   transform: scaleX(-1);
+  opacity: 1;
+  visibility: visible;
 }
 
 .camera-stage.is-environment video,
 .camera-stage.is-environment .mask-overlay,
 .camera-stage.is-environment .camera-placeholder {
   visibility: hidden;
-}
-
-.camera-stage.is-ar-active video {
-  opacity: 0;
+  display: none;
 }
 
 .mask-overlay {

@@ -77,6 +77,14 @@
               <span class="preview-caption">LOCAL CAMERA PREVIEW</span>
             </div>
 
+            <label class="mode-control" for="trackingEngine">
+              <span>Pose tracking engine</span>
+              <select id="trackingEngine">
+                <option value="rtmpose" selected>RTMPose (OpenMMLab SOTA)</option>
+                <option value="mediapipe">MediaPipe Pose (Backup)</option>
+              </select>
+            </label>
+
             <label class="mode-control" for="renderMode">
               <span>Rendering mode</span>
               <select id="renderMode">
@@ -247,7 +255,7 @@
             </p>
 
             <div class="equipment-list" role="group" aria-label="PPE items">
-              <button class="equipment-item" type="button" aria-pressed="false">
+              <button class="equipment-item" type="button" aria-pressed="false" id="helmetToggle" data-equipment="helmet">
                 <span class="equipment-icon" aria-hidden="true">H</span>
                 <span class="equipment-copy">
                   <strong>Safety helmet</strong>
@@ -255,7 +263,7 @@
                 </span>
                 <span class="equipment-check" aria-hidden="true"></span>
               </button>
-              <button class="equipment-item" type="button" aria-pressed="false">
+              <button class="equipment-item" type="button" aria-pressed="false" id="vestToggle" data-equipment="vest">
                 <span class="equipment-icon" aria-hidden="true">V</span>
                 <span class="equipment-copy">
                   <strong>High-visibility vest</strong>
@@ -263,7 +271,7 @@
                 </span>
                 <span class="equipment-check" aria-hidden="true"></span>
               </button>
-              <button class="equipment-item" type="button" aria-pressed="false">
+              <button class="equipment-item" type="button" aria-pressed="false" id="glovesToggle" data-equipment="gloves">
                 <span class="equipment-icon" aria-hidden="true">G</span>
                 <span class="equipment-copy">
                   <strong>Protective gloves</strong>

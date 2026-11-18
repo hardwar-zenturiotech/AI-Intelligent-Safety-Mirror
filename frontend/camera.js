@@ -7,7 +7,12 @@ export async function requestCameraStream() {
 
   return navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: "user" },
+    video: {
+      facingMode: "user",
+      width: { ideal: 1280, max: 1920 },
+      height: { ideal: 720, max: 1080 },
+      frameRate: { ideal: 30, max: 60 },
+    },
   });
 }
 

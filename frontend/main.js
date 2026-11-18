@@ -3,14 +3,20 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { Avatar } from "./avatar.js";
-import { createSCBACylinderApparatus } from "./scbaApparatus.js";
+import {
+  createSCBACylinderApparatus,
+  createSCBAFaceMask,
+  createSafetyHelmet,
+  createSafetyVest,
+  createProtectiveGloves,
+} from "./scbaApparatus.js";
 import { mapLandmarkToStage, requestCameraStream } from "./camera.js";
 import {
-  PoseTracker,
+  UnifiedPoseTracker,
   POSE_CONNECTIONS,
   createSyntheticPose,
   isLandmarkUsable,
-} from "./poseTracker.js";
+} from "./rtmposeTracker.js";
 
 const cameraPreview = document.querySelector("#cameraPreview");
 const cameraPlaceholder = document.querySelector("#cameraPlaceholder");
@@ -42,7 +48,11 @@ const avatarSizeValue = document.querySelector("#avatarSizeValue");
 const avatarDepthInput = document.querySelector("#avatarDepth");
 const avatarDepthValue = document.querySelector("#avatarDepthValue");
 const resetAvatarSliders = document.querySelector("#resetAvatarSliders");
+const helmetToggle = document.querySelector("#helmetToggle");
+const vestToggle = document.querySelector("#vestToggle");
+const glovesToggle = document.querySelector("#glovesToggle");
 const respiratorToggle = document.querySelector("#respiratorToggle");
+const trackingEngine = document.querySelector("#trackingEngine");
 const renderMode = document.querySelector("#renderMode");
 const poseStatus = document.querySelector("#poseStatus");
 const boneReport = document.querySelector("#boneReport");
@@ -96,6 +106,11 @@ let recordingSaving = false;
 const syntheticVideo = { videoWidth: 640, videoHeight: 480 };
 const avatar = new Avatar(cameraStage, updateBoneReport);
 avatar.video = cameraPreview;
+avatar.onPostRender = () => {
+  if (mediaRecorder?.state === "recording") {
+    renderCompositeRecordingFrame();
+  }
+};
 const overlayCalibration = { size: 0.82, offsetX: 0, offsetY: 0, depth: 0 };
 
 function setPoseStatus(message, state = "idle") {
@@ -105,7 +120,14 @@ function setPoseStatus(message, state = "idle") {
 
 function setCameraState(isRunning) {
   cameraPreview.hidden = !isRunning;
-  maskOverlay.hidden = !isRunning;
+  if (isRunning) {
+    cameraPreview.style.display = "block";
+    cameraPreview.style.opacity = "1";
+    cameraPreview.style.visibility = "visible";
+  } else {
+    cameraPreview.style.display = "none";
+  }
+  maskOverlay.hidden = true; // Mask overlay kept hidden to eliminate duplicate respirator
   cameraPlaceholder.hidden = isRunning || syntheticPoseInput.checked;
   feedStatus.classList.toggle("is-live", isRunning);
   feedStatus.lastChild.textContent = isRunning ? " CAMERA LIVE" : " CAMERA OFF";
@@ -124,19 +146,18 @@ async function startCamera() {
     cameraStream = await requestCameraStream();
     cameraPreview.srcObject = cameraStream;
     await cameraPreview.play();
+    cameraStage.classList.remove("is-ar-active");
     setCameraState(true);
     cameraMessage.textContent = "Loading pose tracking...";
-    lastVideoTime = -1;
-    lastFaceDetected = null;
-    trackingFrameId = requestAnimationFrame(trackFaceFrame);
+    startPoseTrackingLoop();
     try {
       poseTracker = await loadPoseTracker();
-      setPoseStatus("Pose Landmarker ready; waiting for a visible person.", "ready");
+      setPoseStatus("Pose tracker ready; waiting for a visible person.", "ready");
+      cameraMessage.textContent = "Camera live. 3D safety PPE tracking is active.";
     } catch (error) {
       console.error("Could not start pose tracking.", error);
       setPoseStatus(`Pose tracking unavailable: ${error.message}`, "error");
     }
-    void initializeFaceOverlay(cameraStream);
     updateRecordingControls();
     recordingMessage.textContent = "Ready to record session to recordings/.";
   } catch (error) {
@@ -155,29 +176,8 @@ async function startCamera() {
   }
 }
 
-async function initializeFaceOverlay(stream) {
-  try {
-    faceLandmarker = await loadFaceLandmarker();
-    if (cameraStream !== stream) {
-      return;
-    }
-    await initializeMaskOverlay();
-    if (cameraStream !== stream) {
-      return;
-    }
-    cameraMessage.textContent = "Camera live. Pose and face tracking are active.";
-    updateRecordingControls();
-  } catch (error) {
-    console.error("Could not start optional face overlay.", error);
-    cameraMessage.textContent = `Camera and pose are live; face overlay unavailable: ${error.message}`;
-  }
-}
-
 function stopCamera() {
-  if (trackingFrameId !== null) {
-    cancelAnimationFrame(trackingFrameId);
-    trackingFrameId = null;
-  }
+  stopPoseTrackingLoop();
   avatar.update(null, null);
   if (!syntheticPoseInput.checked) {
     poseConfidence.textContent = "Tracking: --";
@@ -232,14 +232,9 @@ function renderCompositeRecordingFrame() {
   if (mediaRecorder?.state !== "recording" || !recordingCtx || !recordingCanvas) {
     return;
   }
-  recordingFrameId = requestAnimationFrame(renderCompositeRecordingFrame);
 
   const w = recordingCanvas.width;
   const h = recordingCanvas.height;
-
-  // Solid background
-  recordingCtx.fillStyle = "#141b1c";
-  recordingCtx.fillRect(0, 0, w, h);
 
   // Draw Camera Feed with cover-fit matching live preview exactly
   if (cameraPreview && cameraPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -258,6 +253,9 @@ function renderCompositeRecordingFrame() {
     }
     recordingCtx.drawImage(cameraPreview, drawX, drawY, drawW, drawH);
     recordingCtx.restore();
+  } else {
+    recordingCtx.fillStyle = "#141b1c";
+    recordingCtx.fillRect(0, 0, w, h);
   }
 
   // Draw 3D Avatar (if loaded and active)
@@ -272,12 +270,6 @@ function renderCompositeRecordingFrame() {
     } else {
       recordingCtx.drawImage(avatarCanvas, 0, 0, w, h);
     }
-  }
-
-  // Draw Gas Mask overlay (if respirator selected and visible)
-  const maskCanvas = maskOverlayRenderer?.domElement;
-  if (maskCanvas && maskOverlayModel?.visible && maskCanvas.width > 0 && maskCanvas.height > 0) {
-    recordingCtx.drawImage(maskCanvas, 0, 0, w, h);
   }
 
   // Draw Pose Debug skeleton (if visible)
@@ -359,14 +351,14 @@ function startRecording() {
     "video/mp4",
   ].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
 
-  // Set up composite recording canvas matching live stage aspect ratio
+  // Set up composite recording canvas matching live stage aspect ratio with even dimensions for HW encoding
   const stage = cameraStage.getBoundingClientRect();
   const stageWidth = Math.round(stage.width) || 1280;
   const stageHeight = Math.round(stage.height) || 720;
   const aspect = stageWidth / stageHeight;
   const targetH = Math.max(720, Math.min(1080, stageHeight));
-  const width = Math.round(targetH * aspect);
-  const height = targetH;
+  const height = Math.round(targetH) & ~1;
+  const width = Math.round(height * aspect) & ~1;
 
   if (!recordingCanvas) {
     recordingCanvas = document.createElement("canvas");
@@ -376,23 +368,19 @@ function startRecording() {
   recordingCtx = recordingCanvas.getContext("2d", { alpha: false, desynchronized: true }) || recordingCanvas.getContext("2d");
   if (recordingCtx) {
     recordingCtx.imageSmoothingEnabled = true;
-    recordingCtx.imageSmoothingQuality = "high";
+    recordingCtx.imageSmoothingQuality = "medium";
   }
 
   let recordingStream;
   try {
-    recordingStream = recordingCanvas.captureStream(60);
-  } catch {
-    try {
-      recordingStream = recordingCanvas.captureStream(30);
-    } catch (error) {
-      console.warn("Canvas captureStream failed; falling back to direct camera stream.", error);
-      recordingStream = cameraStream.clone();
-    }
+    recordingStream = recordingCanvas.captureStream(30);
+  } catch (error) {
+    console.warn("Canvas captureStream failed; falling back to direct camera stream.", error);
+    recordingStream = cameraStream.clone();
   }
 
   const recorderOptions = {
-    videoBitsPerSecond: 6_000_000,
+    videoBitsPerSecond: 4_500_000,
   };
   if (mimeType) {
     recorderOptions.mimeType = mimeType;
@@ -771,7 +759,7 @@ function recordPoseFrame(now, source) {
   poseFpsStartTime = now;
 }
 
-function updatePoseFrame() {
+function updatePoseFrame(frameTime = performance.now()) {
   if (syntheticPoseInput.checked) {
     return;
   }
@@ -780,7 +768,7 @@ function updatePoseFrame() {
     return;
   }
   try {
-    const now = performance.now();
+    const now = frameTime;
     const pose = poseTracker.detect(cameraPreview, now);
     recordPoseFrame(now, "pose");
     avatar.update(pose.landmarks, pose.worldLandmarks, cameraPreview);
@@ -869,13 +857,25 @@ function updateSyntheticPoseFrame(timestamp) {
 
 function loadPoseTracker() {
   if (!poseTrackerPromise) {
-    poseTrackerPromise = PoseTracker.create().catch((error) => {
+    const preferredEngine = trackingEngine ? trackingEngine.value : "rtmpose";
+    poseTrackerPromise = UnifiedPoseTracker.create({
+      preferredEngine,
+      onStatus: (status) => {
+        setPoseStatus(status.message, status.state);
+      },
+    }).catch((error) => {
       poseTrackerPromise = null;
       throw error;
     });
   }
   return poseTrackerPromise;
 }
+
+trackingEngine?.addEventListener("change", (event) => {
+  if (poseTracker) {
+    poseTracker.setEngine(event.target.value);
+  }
+});
 
 [showPoseSkeleton, showJointPositions].forEach((input) => {
   input.addEventListener("change", () => {
@@ -965,40 +965,35 @@ resetAvatarCalibration.addEventListener("click", () => {
 
 updateCalibration();
 updateAvatarSliders();
-avatar.setSCBAVisible(isRespiratorActive());
 
+// Initialize all 3D PPE items based on checklist state
 equipmentItems.forEach((item) => {
+  const eqType = item.dataset.equipment;
+  if (eqType) {
+    const isPressed = item.getAttribute("aria-pressed") === "true";
+    avatar.setPPEItemVisible(eqType, isPressed);
+  }
+
   item.addEventListener("click", () => {
     const isSelected = item.getAttribute("aria-pressed") === "true";
-    item.setAttribute("aria-pressed", String(!isSelected));
+    const nextState = !isSelected;
+    item.setAttribute("aria-pressed", String(nextState));
 
     const selectedCount = document.querySelectorAll(
       '.equipment-item[aria-pressed="true"]',
     ).length;
     checkCount.textContent = `${selectedCount} / ${equipmentItems.length}`;
 
-    if (item === respiratorToggle || item.dataset.equipment === "respirator") {
-      const active = item.getAttribute("aria-pressed") === "true";
-      avatar.setSCBAVisible(active);
-      if (!active) {
-        if (maskOverlayModel) {
-          maskOverlayModel.visible = false;
-        }
-        if (faceOccluder) {
-          faceOccluder.visible = false;
-        }
-        if (headOccluder) {
-          headOccluder.visible = false;
-        }
-        maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
-        if (cameraStream) {
-          cameraMessage.textContent =
-            "SCBA kit overlay disabled (Respirator unselected in PPE checklist).";
-        }
-      } else if (cameraStream) {
-        cameraMessage.textContent =
-          "SCBA kit overlay enabled (Respirator selected in PPE checklist).";
-      }
+    const equipmentType = item.dataset.equipment;
+    if (equipmentType) {
+      avatar.setPPEItemVisible(equipmentType, nextState);
+    }
+
+    const label = item.querySelector("strong")?.textContent || equipmentType;
+    if (cameraStream) {
+      cameraMessage.textContent = nextState
+        ? `${label} overlay enabled.`
+        : `${label} overlay disabled.`;
     }
   });
 });
@@ -1089,7 +1084,8 @@ function updateVideoBackground() {
     width * planeScale,
     height * planeScale,
   );
-  cameraStage.classList.add("is-ar-active");
+  // Keep cameraStage clean so native HTML5 video feed remains visible in AR mode
+  cameraStage.classList.remove("is-ar-active");
 }
 
 async function initializeMaskOverlay() {
@@ -1303,191 +1299,93 @@ function updateFaceOccluder(
 }
 
 function updateMaskOverlay(landmarks) {
-  if (!isRespiratorActive()) {
-    if (maskOverlayModel) {
-      maskOverlayModel.visible = false;
-    }
-    if (faceOccluder) {
-      faceOccluder.visible = false;
-    }
-    if (headOccluder) {
-      headOccluder.visible = false;
-    }
-    maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+  // In unified AR mode, the single 3D respirator is attached to the avatar's head bone.
+  // We keep maskOverlayModel hidden so only ONE respirator is rendered.
+  if (maskOverlayModel) {
+    maskOverlayModel.visible = false;
+  }
+  if (faceOccluder) {
+    faceOccluder.visible = false;
+  }
+  if (headOccluder) {
+    headOccluder.visible = false;
+  }
+  if (maskOverlay) {
+    maskOverlay.hidden = true;
+  }
+
+  if (!landmarks || landmarks.length <= 454) {
     return false;
   }
 
-  if (!maskOverlayModel || landmarks.length <= 454) {
-    maskLostFrames += 1;
-    if (maskLostFrames > 4) {
-      if (faceOccluder) {
-        faceOccluder.visible = false;
-      }
-      if (headOccluder) {
-        headOccluder.visible = false;
-      }
-      if (maskOverlayModel) {
-        maskOverlayModel.visible = false;
-      }
-      maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
-    }
-    return false;
-  }
-
-  const stage = cameraStage.getBoundingClientRect();
   const leftCheek = mapFaceLandmark(landmarks[234]);
   const rightCheek = mapFaceLandmark(landmarks[454]);
-  const nose = mapFaceLandmark(landmarks[1]);
-  const mouth = mapFaceLandmark(landmarks[13]);
   const cheekWidth = Math.hypot(
     rightCheek.x - leftCheek.x,
     rightCheek.y - leftCheek.y,
   );
-
-  if (cheekWidth < 16) {
-    maskLostFrames += 1;
-    if (maskLostFrames > 4) {
-      maskOverlayModel.visible = false;
-      faceOccluder.visible = false;
-      headOccluder.visible = false;
-      maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
-    }
-    return false;
-  }
-
-  maskLostFrames = 0;
-
-  const eyeA = mapFaceLandmark(landmarks[33]);
-  const eyeB = mapFaceLandmark(landmarks[263]);
-  const leftEye = eyeA.x < eyeB.x ? eyeA : eyeB;
-  const rightEye = eyeA.x < eyeB.x ? eyeB : eyeA;
-  const screenRoll = Math.atan2(
-    rightEye.y - leftEye.y,
-    rightEye.x - leftEye.x,
-  );
-  // Screen Y points down, opposite to Three.js world Y.
-  const roll = -screenRoll;
-  const faceCenterX = (leftCheek.x + rightCheek.x) / 2;
-  const yaw = THREE.MathUtils.clamp(
-    (nose.x - faceCenterX) / (cheekWidth * 0.55),
-    -0.8,
-    0.8,
-  );
-  const targetWidth = Math.min(
-    cheekWidth * overlayCalibration.size,
-    stage.width * 0.9,
-  );
-  const targetX =
-    nose.x + (mouth.x - nose.x) * 0.45 + overlayCalibration.offsetX;
-  const targetY =
-    nose.y + (mouth.y - nose.y) * 0.45 + overlayCalibration.offsetY;
-  const targetDepth = overlayCalibration.depth;
-  const perspectiveCompensation =
-    (OVERLAY_CAMERA_DISTANCE - targetDepth) / OVERLAY_CAMERA_DISTANCE;
-  if (!updateFaceOccluder(
-    landmarks,
-    stage,
-    targetDepth,
-    targetWidth,
-    cheekWidth,
-    yaw,
-    roll,
-  )) {
-    maskOverlayModel.visible = false;
-    return false;
-  }
-  const targetPosition = new THREE.Vector3(
-    (targetX - stage.width / 2) * perspectiveCompensation,
-    (stage.height / 2 - targetY) * perspectiveCompensation,
-    targetDepth,
-  );
-
-  if (!maskOverlayModel.visible) {
-    maskOverlayModel.position.copy(targetPosition);
-    maskOverlayModel.scale.setScalar(targetWidth);
-    maskOverlayModel.rotation.set(0, yaw, roll);
-  } else {
-    maskOverlayModel.position.lerp(targetPosition, 0.35);
-    const currentWidth = maskOverlayModel.scale.x;
-    maskOverlayModel.scale.setScalar(
-      THREE.MathUtils.lerp(currentWidth, targetWidth, 0.25),
-    );
-    maskOverlayModel.rotation.y = THREE.MathUtils.lerp(
-      maskOverlayModel.rotation.y,
-      yaw,
-      0.35,
-    );
-    maskOverlayModel.rotation.z = THREE.MathUtils.lerp(
-      maskOverlayModel.rotation.z,
-      roll,
-      0.35,
-    );
-  }
-
-  maskOverlayModel.visible = true;
-  maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
-  return true;
+  return cheekWidth >= 16;
 }
 
-function trackFaceFrame() {
-  if (!cameraStream) {
+let poseTrackingActive = false;
+let isTrackingFrameInProgress = false;
+let lastVideoFrameTime = -1;
+
+function startPoseTrackingLoop() {
+  poseTrackingActive = true;
+  scheduleNextPoseFrame();
+}
+
+function stopPoseTrackingLoop() {
+  poseTrackingActive = false;
+  isTrackingFrameInProgress = false;
+  lastVideoFrameTime = -1;
+  if (trackingFrameId !== null) {
+    cancelAnimationFrame(trackingFrameId);
     trackingFrameId = null;
+  }
+}
+
+function scheduleNextPoseFrame() {
+  if (!poseTrackingActive || !cameraStream) return;
+
+  if ("requestVideoFrameCallback" in cameraPreview) {
+    cameraPreview.requestVideoFrameCallback((now) => {
+      runPoseDetectionStep(now);
+      scheduleNextPoseFrame();
+    });
+  } else {
+    trackingFrameId = requestAnimationFrame((now) => {
+      runPoseDetectionStep(now);
+      scheduleNextPoseFrame();
+    });
+  }
+}
+
+function runPoseDetectionStep(now) {
+  if (
+    !poseTrackingActive ||
+    isTrackingFrameInProgress ||
+    !poseTracker ||
+    cameraPreview.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+  ) {
     return;
   }
 
-  if (
-    cameraPreview.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-    cameraPreview.currentTime !== lastVideoTime
-  ) {
-    lastVideoTime = cameraPreview.currentTime;
-    if (faceLandmarker) {
-      try {
-        const result = faceLandmarker.detectForVideo(cameraPreview, performance.now());
-        const landmarks = result.faceLandmarks?.[0];
-        if (landmarks && updateMaskOverlay(landmarks)) {
-          if (lastFaceDetected !== true) {
-            cameraMessage.textContent = "Face detected — gas mask overlay active.";
-            lastFaceDetected = true;
-          }
-        } else {
-          if (maskOverlayModel) {
-            maskOverlayModel.visible = false;
-            if (faceOccluder) {
-              faceOccluder.visible = false;
-            }
-            if (headOccluder) {
-              headOccluder.visible = false;
-            }
-            maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
-          }
-          const status = !isRespiratorActive()
-            ? (landmarks
-                ? "Face detected. Toggle 'Respirator' in PPE checklist to wear gas mask."
-                : "No face detected. Select 'Respirator' in PPE checklist to test gas mask.")
-            : (landmarks
-                ? "Face detected. Move closer to position the mask."
-                : "No face detected. Face the camera to see the gas mask overlay.");
-          if (lastFaceDetected !== false || cameraMessage.textContent !== status) {
-            cameraMessage.textContent = status;
-            lastFaceDetected = false;
-          }
-        }
-      } catch (error) {
-        console.error("Face tracking failed; pose tracking will continue.", error);
-        const failedLandmarker = faceLandmarker;
-        faceLandmarker = null;
-        cameraMessage.textContent = `Face overlay unavailable; pose tracking continues: ${error.message}`;
-        try {
-          failedLandmarker.close();
-        } catch (closeError) {
-          console.error("Could not release the failed face landmarker.", closeError);
-        }
-      }
-    }
-    updatePoseFrame();
+  // Avoid running on identical duplicate video frames
+  if (cameraPreview.currentTime === lastVideoFrameTime) {
+    return;
   }
+  lastVideoFrameTime = cameraPreview.currentTime;
 
-  trackingFrameId = requestAnimationFrame(trackFaceFrame);
+  isTrackingFrameInProgress = true;
+  try {
+    updatePoseFrame(now);
+  } catch (err) {
+    console.error("Pose tracking update error:", err);
+  } finally {
+    isTrackingFrameInProgress = false;
+  }
 }
 
 function initModelViewer() {
@@ -1559,25 +1457,52 @@ function initModelViewer() {
       const center = bounds.getCenter(new THREE.Vector3());
       const viewerModel = new THREE.Group();
 
-      // SCBA Face Mask (front view)
+      // Safety Helmet (top)
+      const viewerHelmet = createSafetyHelmet();
+      viewerHelmet.scale.setScalar(2.0);
+      viewerHelmet.position.set(0, 0.72, 0);
+      viewerHelmet.rotation.y = -Math.PI * 0.12;
+      viewerModel.add(viewerHelmet);
+
+      // SCBA Face Mask (center-left)
       const viewerMask = new THREE.Group();
       const viewerContent = model.clone(true);
       viewerContent.position.sub(center);
       viewerMask.add(viewerContent);
-      viewerMask.scale.setScalar(1.9 / largestDimension);
-      viewerMask.position.set(-0.75, 0, 0);
+      viewerMask.scale.setScalar(1.5 / largestDimension);
+      viewerMask.position.set(-0.72, 0.05, 0);
       viewerModel.add(viewerMask);
 
-      // SCBA Back Cylinder Apparatus (angled showcase view)
+      // SCBA Back Cylinder Apparatus (center-right)
       const viewerCylinder = createSCBACylinderApparatus();
-      viewerCylinder.scale.setScalar(2.4);
-      viewerCylinder.position.set(0.75, -0.05, 0);
+      viewerCylinder.scale.setScalar(1.9);
+      viewerCylinder.position.set(0.72, 0.05, 0);
       viewerCylinder.rotation.y = Math.PI * 0.85;
       viewerModel.add(viewerCylinder);
 
+      // High-Visibility Safety Vest (center)
+      const viewerVest = createSafetyVest();
+      viewerVest.scale.setScalar(1.5);
+      viewerVest.position.set(0, -0.28, 0);
+      viewerVest.rotation.y = Math.PI * 0.08;
+      viewerModel.add(viewerVest);
+
+      // Protective Gloves (bottom left & right)
+      const viewerGloveL = createProtectiveGloves("left");
+      viewerGloveL.scale.setScalar(2.6);
+      viewerGloveL.position.set(-0.9, -0.68, 0);
+      viewerGloveL.rotation.y = Math.PI * 0.25;
+      viewerModel.add(viewerGloveL);
+
+      const viewerGloveR = createProtectiveGloves("right");
+      viewerGloveR.scale.setScalar(2.6);
+      viewerGloveR.position.set(0.9, -0.68, 0);
+      viewerGloveR.rotation.y = -Math.PI * 0.25;
+      viewerModel.add(viewerGloveR);
+
       scene.add(viewerModel);
 
-      modelStatus.textContent = "SCBA KIT LOADED";
+      modelStatus.textContent = "PPE GEAR LOADED";
       modelMessage.hidden = true;
       resetModelView.disabled = false;
       resetView();

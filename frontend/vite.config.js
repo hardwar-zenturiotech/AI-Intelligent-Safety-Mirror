@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, readFileSync } from "node:fs";
+import { createReadStream, createWriteStream, readFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -19,6 +19,16 @@ const motionCaptureModels = [
   {
     fileName: "models/pose_landmarker_lite.task",
     source: resolve(projectDirectory, "models", "pose_landmarker_lite.task"),
+    contentType: "application/octet-stream",
+  },
+  {
+    fileName: "models/rtmpose-m.onnx",
+    source: resolve(projectDirectory, "models", "rtmpose-m.onnx"),
+    contentType: "application/octet-stream",
+  },
+  {
+    fileName: "models/rtmpose-s.onnx",
+    source: resolve(projectDirectory, "models", "rtmpose-s.onnx"),
     contentType: "application/octet-stream",
   },
 ];
@@ -170,11 +180,13 @@ export default defineConfig({
       },
       generateBundle() {
         for (const model of motionCaptureModels) {
-          this.emitFile({
-            type: "asset",
-            fileName: model.fileName,
-            source: readFileSync(model.source),
-          });
+          if (existsSync(model.source)) {
+            this.emitFile({
+              type: "asset",
+              fileName: model.fileName,
+              source: readFileSync(model.source),
+            });
+          }
         }
         for (const file of visionWasmFiles) {
           this.emitFile({

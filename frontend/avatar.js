@@ -71,7 +71,9 @@ export class Avatar {
     this.modelHeight = 1;
     this.modelHipHeight = 0;
     this.modelTorsoHeight = 0.32;
+    this.modelHeadHeight = 0.38;
     this.modelHeadShoulderHeight = 0.18;
+    this.modelHeadToAnkleHeight = 0.62;
     this.modelShoulderAnchors = "upper-arm bones";
     this.lastScaleReference = "waiting for pose";
     this.lastHorizontalScaleReference = "waiting for pose";
@@ -141,11 +143,14 @@ export class Avatar {
       );
       normalization.updateMatrixWorld(true);
       this.modelHipHeight = hips.getWorldPosition(new THREE.Vector3()).y;
-      const leftShoulderBone = rig.anchors.leftShoulder || rig.mapping.leftUpperArm;
-      const rightShoulderBone = rig.anchors.rightShoulder || rig.mapping.rightUpperArm;
-      if (leftShoulderBone && rightShoulderBone) {
-        const leftShoulder = leftShoulderBone.getWorldPosition(new THREE.Vector3());
-        const rightShoulder = rightShoulderBone.getWorldPosition(new THREE.Vector3());
+      // Glenohumeral shoulder joints (upper arm pivots) correspond directly to MediaPipe landmarks 11 & 12
+      const leftUpperArm = rig.mapping.leftUpperArm;
+      const rightUpperArm = rig.mapping.rightUpperArm;
+      const leftShoulderJoint = leftUpperArm || rig.anchors.leftShoulder;
+      const rightShoulderJoint = rightUpperArm || rig.anchors.rightShoulder;
+      if (leftShoulderJoint && rightShoulderJoint) {
+        const leftShoulder = leftShoulderJoint.getWorldPosition(new THREE.Vector3());
+        const rightShoulder = rightShoulderJoint.getWorldPosition(new THREE.Vector3());
         const measuredShoulderWidth = leftShoulder.distanceTo(rightShoulder);
         if (Number.isFinite(measuredShoulderWidth) && measuredShoulderWidth > 0.01) {
           this.modelShoulderWidth = measuredShoulderWidth;
@@ -154,15 +159,21 @@ export class Avatar {
         this.modelShoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2;
         this.modelTorsoHeight = Math.abs(this.modelShoulderHeight - this.modelHipHeight);
         const headPosition = rig.mapping.head?.getWorldPosition(new THREE.Vector3());
-        const headDistance = headPosition
-          ? Math.abs(headPosition.y - this.modelShoulderHeight)
-          : 0;
-        this.modelHeadShoulderHeight =
-          headDistance > 0.02 ? headDistance : Math.abs(1 - this.modelShoulderHeight);
-        this.modelShoulderAnchors =
-          rig.anchors.leftShoulder && rig.anchors.rightShoulder
-            ? `${leftShoulderBone.name} / ${rightShoulderBone.name}`
-            : "upper-arm bones (fallback)";
+        this.modelHeadHeight = headPosition ? headPosition.y : this.modelShoulderHeight + 0.12;
+        this.modelHeadShoulderHeight = Math.abs(this.modelHeadHeight - this.modelShoulderHeight);
+        this.modelShoulderAnchors = `${leftShoulderJoint.name} / ${rightShoulderJoint.name}`;
+      }
+      const leftAnkle = rig.mapping.leftLeg;
+      const rightAnkle = rig.mapping.rightLeg;
+      if (leftAnkle && rightAnkle) {
+        const lPos = leftAnkle.getWorldPosition(new THREE.Vector3());
+        const rPos = rightAnkle.getWorldPosition(new THREE.Vector3());
+        const ankleY = (lPos.y + rPos.y) / 2;
+        this.modelAnkleHeight = ankleY;
+        this.modelHeadToAnkleHeight = Math.abs((this.modelHeadHeight || 0.38) - ankleY);
+      } else {
+        this.modelAnkleHeight = -0.50;
+        this.modelHeadToAnkleHeight = 0.62;
       }
       if (rig.mapping.leftUpperLeg && rig.mapping.rightUpperLeg) {
         const leftHipPosition = rig.mapping.leftUpperLeg.getWorldPosition(new THREE.Vector3());
@@ -422,7 +433,6 @@ export class Avatar {
     this.lastDetectedHeadShoulderHeight = headShoulderHeight;
 
     // 1. Measure true 3D metric dimensions of the detected human from world landmarks
-    // (these are invariant to body rotation/yaw/pitch in meters)
     let humanTorsoMeters = 0.50;
     let humanShoulderMeters = 0.40;
     const hasWorldShoulders =
@@ -463,158 +473,106 @@ export class Avatar {
     const unprojectedShoulderWidth = shoulderWidth / cosYaw;
     const unprojectedTorsoHeight = torsoHeight / cosPitch;
 
-    // 3. Calculate detected human pixel-to-meter scale
-    let pixelsPerMeter = 0;
-    if (unprojectedTorsoHeight > 10) {
-      pixelsPerMeter = unprojectedTorsoHeight / humanTorsoMeters;
-    } else if (unprojectedShoulderWidth > 10) {
-      pixelsPerMeter = unprojectedShoulderWidth / humanShoulderMeters;
+    // 3. Compute accurate scale matching the human on screen
+    let scale = 0;
+    const detectedHeadToAnkle =
+      imageNose && ankleY !== null && ankleY > imageNose.y
+        ? ankleY - imageNose.y
+        : 0;
+
+    if (detectedHeadToAnkle > 0 && this.modelHeadToAnkleHeight > 0.05) {
+      scale = detectedHeadToAnkle / this.modelHeadToAnkleHeight;
+      this.lastScaleReference = "head-to-ankles";
+    } else if (unprojectedTorsoHeight > 0 && this.modelTorsoHeight > 0.02) {
+      scale = unprojectedTorsoHeight / this.modelTorsoHeight;
+      this.lastScaleReference = "torso height";
+    } else if (headShoulderHeight > 0 && this.modelHeadShoulderHeight > 0.02) {
+      scale = headShoulderHeight / this.modelHeadShoulderHeight;
+      this.lastScaleReference = "head-to-shoulders";
+    } else if (unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0.02) {
+      scale = unprojectedShoulderWidth / this.modelShoulderWidth;
+      this.lastScaleReference = "shoulder width";
+    } else if (hipWidth > 0 && this.modelHipWidth > 0.02) {
+      scale = hipWidth / this.modelHipWidth;
+      this.lastScaleReference = "hip width";
+    } else {
+      scale = this.group.scale.y || 100;
+      this.lastScaleReference = "fallback scale";
     }
 
-    // 4. Baseline depth auto-calibration
-    if ((!this.calibratedPixelsPerMeter || this.calibratedPixelsPerMeter <= 0) && pixelsPerMeter > 40) {
-      this.calibratedPixelsPerMeter = pixelsPerMeter;
-    }
+    scale = Math.max(scale, 20);
 
-    // 5. Calculate calibrated depth (Z) according to the detected human
-    const depthRatio =
-      this.calibratedPixelsPerMeter > 0 && pixelsPerMeter > 0
-        ? pixelsPerMeter / this.calibratedPixelsPerMeter
-        : 1.0;
+    // Anatomical width scaling: fit the human's shoulder width naturally without distortion
+    const shoulderScale =
+      unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0
+        ? unprojectedShoulderWidth / this.modelShoulderWidth
+        : scale;
+    const widthFactor = THREE.MathUtils.clamp(shoulderScale / scale, 0.85, 1.25);
+    const scaleX = scale * widthFactor;
+    const scaleY = scale;
+    this.lastHorizontalScaleReference = "shoulder width";
 
+    // 4. Calculate depth (Z)
     let targetDepth = 0;
     if (this.renderMode === "environment") {
-      targetDepth = THREE.MathUtils.clamp(
-        (depthRatio - 1.0) * 1.8 + (this.userDepthOffset / 250),
-        -2.5,
-        2.5,
-      );
+      targetDepth = THREE.MathUtils.clamp(this.userDepthOffset / 250, -2.5, 2.5);
     } else {
-      // In camera mode: camera is at Z = 1000. Moving closer increases Z towards the camera.
-      const clampedRatio = THREE.MathUtils.clamp(depthRatio, 0.4, 2.5);
-      const virtualDistance = 1000 / clampedRatio;
-      targetDepth = THREE.MathUtils.clamp(
-        1000 - virtualDistance + this.userDepthOffset,
-        -500,
-        600,
-      );
+      targetDepth = THREE.MathUtils.clamp(this.userDepthOffset, -450, 450);
     }
     this.lastDetectedDepth = targetDepth;
 
-    // 6. Compute calibrated scale (X, Y, Z) matching the detected human's proportions
-    const scaleFromShoulders =
-      unprojectedShoulderWidth > 0 && this.modelShoulderWidth > 0
-        ? unprojectedShoulderWidth / this.modelShoulderWidth
-        : 0;
-    const scaleFromHips =
-      hipWidth > 0 && this.modelHipWidth > 0 ? hipWidth / this.modelHipWidth : 0;
-    const widthScale = scaleFromShoulders || scaleFromHips;
+    // 5. Calculate screen anchor position (originX, originY) for the avatar Hips root
+    let originX = stage.width / 2;
+    let originY = stage.height / 2;
 
-    let scaleY = 0;
-    if (bodyHeight > 0 && this.modelHeight > 0) {
-      scaleY = bodyHeight / this.modelHeight;
-      this.lastScaleReference = "nose-to-ankles";
-    } else if (unprojectedTorsoHeight > 0 && this.modelTorsoHeight > 0.02) {
-      scaleY = unprojectedTorsoHeight / this.modelTorsoHeight;
-      this.lastScaleReference = "calibrated torso height";
-    } else if (headShoulderHeight > 0 && this.modelHeadShoulderHeight > 0.02) {
-      scaleY = headShoulderHeight / this.modelHeadShoulderHeight;
-      this.lastScaleReference = "nose-to-shoulder height";
-    } else {
-      scaleY = widthScale;
-      this.lastScaleReference = shoulderWidth > 0 || hipWidth > 0
-        ? "shoulder/hip width"
-        : "no visible scale landmarks";
+    if (hasShoulderCenter && hasHipCenter) {
+      // Both shoulders and hips visible: center torso horizontally and align vertical torso span
+      originX = (imageShoulderCenter.x + imageHipCenter.x) / 2;
+      originY = (imageShoulderCenter.y + imageHipCenter.y) / 2 + (scaleY * this.modelTorsoHeight) / 2;
+    } else if (hasShoulderCenter) {
+      // Hips out of frame (sitting or waist-up): anchor directly below shoulders
+      originX = imageShoulderCenter.x;
+      originY = imageShoulderCenter.y + scaleY * this.modelShoulderHeight;
+    } else if (hasHipCenter) {
+      // Shoulders out of frame: anchor directly at hips
+      originX = imageHipCenter.x;
+      originY = imageHipCenter.y;
+    } else if (imageNose) {
+      // Only head/face visible: anchor directly below head
+      originX = imageNose.x;
+      originY = imageNose.y + scaleY * (this.modelHeadHeight || 0.38);
     }
 
-    const humanDetectedShoulderPx =
-      pixelsPerMeter > 0
-        ? pixelsPerMeter * humanShoulderMeters
-        : (unprojectedShoulderWidth || scaleY * this.modelShoulderWidth);
-    let scaleX =
-      humanDetectedShoulderPx > 0 && this.modelShoulderWidth > 0
-        ? humanDetectedShoulderPx / this.modelShoulderWidth
-        : scaleY;
-
-    this.lastHorizontalScaleReference =
-      pixelsPerMeter > 0 ? "calibrated 3D human shoulders" : "unprojected shoulder width";
-
-    const hasScaleMeasurement =
-      bodyHeight > 0 ||
-      torsoHeight > 0 ||
-      headShoulderHeight > 0 ||
-      widthScale > 0;
-    scaleX = hasScaleMeasurement ? Math.max(scaleX, 20) : this.group.scale.x;
-    scaleY = hasScaleMeasurement ? Math.max(scaleY, 20) : this.group.scale.y;
-
+    // 6. Project to Three.js coordinates with perspective compensation
     const visibleHeight =
       this.renderMode === "environment"
         ? 2 * this.camera.position.z * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))
         : 0;
 
-    if (hasScaleMeasurement) {
-      if (this.renderMode === "environment") {
-        const targetScale = THREE.MathUtils.clamp(
-          (humanTorsoMeters / 0.50) *
-            (scaleY / stage.height) *
-            visibleHeight *
-            this.userScaleMultiplier,
-          0.4,
-          visibleHeight * 2.5,
-        );
-        this.scaleTarget.setScalar(targetScale);
-      } else {
-        // Perspective compensation: ensures overlay scale remains visually aligned at depth Z
-        const perspectiveCompensation = Math.max((1000 - targetDepth) / 1000, 0.2);
-        const finalScaleX = scaleX * perspectiveCompensation * this.userScaleMultiplier;
-        const finalScaleY = scaleY * perspectiveCompensation * this.userScaleMultiplier;
-        this.scaleTarget.set(
-          finalScaleX,
-          finalScaleY,
-          finalScaleX,
-        );
-      }
+    if (this.renderMode === "environment") {
+      const targetScale = (scaleY / stage.height) * visibleHeight * this.userScaleMultiplier;
+      this.scaleTarget.setScalar(targetScale);
+      this.positionTarget.set(
+        ((originX / stage.width) * 2 - 1) * this.camera.aspect * (visibleHeight / 2) * 0.85,
+        (0.5 - originY / stage.height) * visibleHeight * 0.85,
+        targetDepth,
+      );
+    } else {
+      // In camera mode: cancel out perspective projection factor so the model projects
+      // to EXACTLY (originX, originY) on screen at ANY depth!
+      const perspectiveFactor = Math.max((1000 - targetDepth) / 1000, 0.2);
+      const finalScaleX = scaleX * perspectiveFactor * this.userScaleMultiplier;
+      const finalScaleY = scaleY * perspectiveFactor * this.userScaleMultiplier;
+      this.scaleTarget.set(finalScaleX, finalScaleY, finalScaleX);
+
+      this.positionTarget.set(
+        (originX - stage.width / 2) * perspectiveFactor,
+        (stage.height / 2 - originY) * perspectiveFactor,
+        targetDepth,
+      );
     }
 
-    // 7. Calculate calibrated 3D position
-    if (hasHipCenter || hasShoulderCenter) {
-      let originX;
-      let originY;
-      if (hasHipCenter) {
-        originX = (leftHip.x + rightHip.x) / 2;
-        originY = (leftHip.y + rightHip.y) / 2;
-      } else {
-        const shoulderPixelsPerUnit =
-          this.renderMode === "environment"
-            ? (this.group.scale.x * stage.height) / visibleHeight
-            : this.group.scale.x;
-        const shoulderPixelsPerUnitY =
-          this.renderMode === "environment"
-            ? shoulderPixelsPerUnit
-            : this.group.scale.y;
-        originX =
-          (leftShoulder.x + rightShoulder.x) / 2 -
-          this.modelShoulderCenterX * shoulderPixelsPerUnit;
-        originY =
-          (leftShoulder.y + rightShoulder.y) / 2 +
-          this.modelShoulderHeight * shoulderPixelsPerUnitY;
-      }
-      if (this.renderMode === "environment") {
-        this.positionTarget.set(
-          ((originX / stage.width) * 2 - 1) * this.camera.aspect * 1.2,
-          (0.5 - originY / stage.height) * 2.4,
-          targetDepth,
-        );
-      } else {
-        this.positionTarget.set(
-          originX - stage.width / 2,
-          stage.height / 2 - originY,
-          targetDepth,
-        );
-      }
-    }
-
-    // 8. Responsive time-based smoothing
+    // 7. Responsive time-based smoothing
     const delta = Math.min(Math.max(this.frameDelta || 0.016, 0.001), 0.1);
     let posAlpha = 1 - Math.exp(-32 * delta);
     let scaleAlpha = 1 - Math.exp(-28 * delta);
@@ -624,12 +582,8 @@ export class Avatar {
       posAlpha = Math.min(1.0, posAlpha + 0.35);
     }
 
-    if (hasScaleMeasurement) {
-      this.group.scale.lerp(this.scaleTarget, scaleAlpha);
-    }
-    if (hasHipCenter || hasShoulderCenter) {
-      this.group.position.lerp(this.positionTarget, posAlpha);
-    }
+    this.group.scale.lerp(this.scaleTarget, scaleAlpha);
+    this.group.position.lerp(this.positionTarget, posAlpha);
 
     this.retargeter.update(landmarks, worldLandmarks, delta);
   }

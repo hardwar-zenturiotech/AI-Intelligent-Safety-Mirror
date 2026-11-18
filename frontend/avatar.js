@@ -26,6 +26,75 @@ function mapVisibleLandmarkToStage(landmark, video, stage) {
     : null;
 }
 
+class AdaptiveScalarFilter {
+  constructor(minCutoff = 1.0, beta = 4.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.current = 0;
+    this.hasValue = false;
+  }
+
+  reset() {
+    this.hasValue = false;
+  }
+
+  filter(target, deltaSeconds) {
+    if (!this.hasValue || deltaSeconds <= 0) {
+      this.current = target;
+      this.hasValue = true;
+      return this.current;
+    }
+
+    const diff = Math.abs(this.current - target);
+    const speed = deltaSeconds > 0 ? diff / deltaSeconds : 0;
+    const cutoff = this.minCutoff + this.beta * speed;
+    const alpha = THREE.MathUtils.clamp(
+      1 - Math.exp(-2 * Math.PI * cutoff * deltaSeconds),
+      0.06,
+      1.0,
+    );
+
+    this.current += (target - this.current) * alpha;
+    return this.current;
+  }
+}
+
+class AdaptivePointFilter {
+  constructor(minCutoff = 1.2, beta = 5.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.currentX = 0;
+    this.currentY = 0;
+    this.hasValue = false;
+  }
+
+  reset() {
+    this.hasValue = false;
+  }
+
+  filter(targetX, targetY, deltaSeconds) {
+    if (!this.hasValue || deltaSeconds <= 0) {
+      this.currentX = targetX;
+      this.currentY = targetY;
+      this.hasValue = true;
+      return { x: this.currentX, y: this.currentY };
+    }
+
+    const dist = Math.hypot(targetX - this.currentX, targetY - this.currentY);
+    const speed = deltaSeconds > 0 ? dist / deltaSeconds : 0;
+    const cutoff = this.minCutoff + this.beta * speed;
+    const alpha = THREE.MathUtils.clamp(
+      1 - Math.exp(-2 * Math.PI * cutoff * deltaSeconds),
+      0.06,
+      1.0,
+    );
+
+    this.currentX += (targetX - this.currentX) * alpha;
+    this.currentY += (targetY - this.currentY) * alpha;
+    return { x: this.currentX, y: this.currentY };
+  }
+}
+
 export class Avatar {
   constructor(container, onStatus) {
     this.container = container;
@@ -90,6 +159,9 @@ export class Avatar {
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
     this.calibrationDebugVisible = false;
+    this.originFilter = new AdaptivePointFilter(1.5, 6.0);
+    this.scaleFilter = new AdaptiveScalarFilter(1.2, 5.0);
+    this.widthFactorFilter = new AdaptiveScalarFilter(1.2, 5.0);
     this.lastTime = performance.now();
     this.frameCount = 0;
     this.fpsTime = this.lastTime;
@@ -325,6 +397,9 @@ export class Avatar {
     this.lastDetectedDepth = 0;
     this.userScaleMultiplier = 1.0;
     this.userDepthOffset = 0;
+    this.originFilter?.reset();
+    this.scaleFilter?.reset();
+    this.widthFactorFilter?.reset();
     this.retargeter?.reset();
     this.group?.position.set(0, 0, 0);
     this.group?.scale.setScalar(1);
@@ -334,6 +409,7 @@ export class Avatar {
     if (!this.retargeter || !this.tracked) {
       return;
     }
+    const delta = Math.min(Math.max(this.frameDelta || 0.016, 0.001), 0.1);
     const { landmarks, worldLandmarks, video } = this.tracked;
     const stage = this.container.getBoundingClientRect();
     if (!stage.width || !stage.height) {
@@ -508,8 +584,12 @@ export class Avatar {
         ? unprojectedShoulderWidth / this.modelShoulderWidth
         : scale;
     const widthFactor = THREE.MathUtils.clamp(shoulderScale / scale, 0.85, 1.25);
-    const scaleX = scale * widthFactor;
-    const scaleY = scale;
+
+    // Adaptive filtering on scale and widthFactor to eliminate size flicker & breathing
+    const filteredScale = this.scaleFilter.filter(scale, delta);
+    const filteredWidthFactor = this.widthFactorFilter.filter(widthFactor, delta);
+    const scaleX = filteredScale * filteredWidthFactor;
+    const scaleY = filteredScale;
     this.lastHorizontalScaleReference = "shoulder width";
 
     // 4. Calculate depth (Z)
@@ -543,6 +623,11 @@ export class Avatar {
       originY = imageNose.y + scaleY * (this.modelHeadHeight || 0.38);
     }
 
+    // Adaptive filtering on screen anchor to eliminate jitter while standing still
+    const filteredOrigin = this.originFilter.filter(originX, originY, delta);
+    originX = filteredOrigin.x;
+    originY = filteredOrigin.y;
+
     // 6. Project to Three.js coordinates with perspective compensation
     const visibleHeight =
       this.renderMode === "environment"
@@ -573,12 +658,11 @@ export class Avatar {
     }
 
     // 7. Responsive time-based smoothing
-    const delta = Math.min(Math.max(this.frameDelta || 0.016, 0.001), 0.1);
-    let posAlpha = 1 - Math.exp(-32 * delta);
-    let scaleAlpha = 1 - Math.exp(-28 * delta);
+    let posAlpha = 1 - Math.exp(-28 * delta);
+    let scaleAlpha = 1 - Math.exp(-24 * delta);
 
     const posDist = this.group.position.distanceTo(this.positionTarget);
-    if (posDist > 25) {
+    if (posDist > 30) {
       posAlpha = Math.min(1.0, posAlpha + 0.35);
     }
 

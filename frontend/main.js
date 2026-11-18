@@ -86,6 +86,7 @@ let maskOverlayScene;
 let maskOverlayModel;
 let faceOccluder;
 let headOccluder;
+let maskLostFrames = 0;
 let videoTexture = null;
 let videoBackground = null;
 let mediaRecorder = null;
@@ -1271,11 +1272,18 @@ function updateMaskOverlay(landmarks) {
   }
 
   if (!maskOverlayModel || landmarks.length <= 454) {
-    if (faceOccluder) {
-      faceOccluder.visible = false;
-    }
-    if (headOccluder) {
-      headOccluder.visible = false;
+    maskLostFrames += 1;
+    if (maskLostFrames > 4) {
+      if (faceOccluder) {
+        faceOccluder.visible = false;
+      }
+      if (headOccluder) {
+        headOccluder.visible = false;
+      }
+      if (maskOverlayModel) {
+        maskOverlayModel.visible = false;
+      }
+      maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
     }
     return false;
   }
@@ -1291,12 +1299,17 @@ function updateMaskOverlay(landmarks) {
   );
 
   if (cheekWidth < 16) {
-    maskOverlayModel.visible = false;
-    faceOccluder.visible = false;
-    headOccluder.visible = false;
-    maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+    maskLostFrames += 1;
+    if (maskLostFrames > 4) {
+      maskOverlayModel.visible = false;
+      faceOccluder.visible = false;
+      headOccluder.visible = false;
+      maskOverlayRenderer?.render(maskOverlayScene, maskOverlayCamera);
+    }
     return false;
   }
+
+  maskLostFrames = 0;
 
   const eyeA = mapFaceLandmark(landmarks[33]);
   const eyeB = mapFaceLandmark(landmarks[263]);
@@ -1348,20 +1361,20 @@ function updateMaskOverlay(landmarks) {
     maskOverlayModel.scale.setScalar(targetWidth);
     maskOverlayModel.rotation.set(0, yaw, roll);
   } else {
-    maskOverlayModel.position.lerp(targetPosition, 0.4);
+    maskOverlayModel.position.lerp(targetPosition, 0.35);
     const currentWidth = maskOverlayModel.scale.x;
     maskOverlayModel.scale.setScalar(
-      THREE.MathUtils.lerp(currentWidth, targetWidth, 0.4),
+      THREE.MathUtils.lerp(currentWidth, targetWidth, 0.25),
     );
     maskOverlayModel.rotation.y = THREE.MathUtils.lerp(
       maskOverlayModel.rotation.y,
       yaw,
-      0.4,
+      0.35,
     );
     maskOverlayModel.rotation.z = THREE.MathUtils.lerp(
       maskOverlayModel.rotation.z,
       roll,
-      0.4,
+      0.35,
     );
   }
 

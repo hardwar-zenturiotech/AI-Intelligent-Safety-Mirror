@@ -106,6 +106,80 @@ export function convertMediaPipeWorldVector(point, target) {
   return target.set(point.x, -point.y, -point.z);
 }
 
+export class AdaptiveQuaternionFilter {
+  constructor(minCutoff = 1.2, beta = 5.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.current = new THREE.Quaternion();
+    this.hasValue = false;
+  }
+
+  reset() {
+    this.hasValue = false;
+  }
+
+  filter(target, deltaSeconds) {
+    if (!this.hasValue || deltaSeconds <= 0) {
+      this.current.copy(target);
+      this.hasValue = true;
+      return this.current;
+    }
+
+    const sign = this.current.dot(target) < 0 ? -1 : 1;
+    const dot = Math.min(Math.max(Math.abs(this.current.dot(target)), 0), 1);
+    const angle = 2 * Math.acos(dot);
+    const speed = deltaSeconds > 0 ? angle / deltaSeconds : 0;
+
+    const cutoff = this.minCutoff + this.beta * speed;
+    const alpha = THREE.MathUtils.clamp(
+      1 - Math.exp(-2 * Math.PI * cutoff * deltaSeconds),
+      0.08,
+      1.0,
+    );
+
+    if (sign < 0) {
+      const flipped = target.clone().set(-target.x, -target.y, -target.z, -target.w);
+      this.current.slerp(flipped, alpha);
+    } else {
+      this.current.slerp(target, alpha);
+    }
+    return this.current;
+  }
+}
+
+export class AdaptiveDirectionFilter {
+  constructor(minCutoff = 1.5, beta = 6.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.current = new THREE.Vector3();
+    this.hasValue = false;
+  }
+
+  reset() {
+    this.hasValue = false;
+  }
+
+  filter(target, deltaSeconds) {
+    if (!this.hasValue || deltaSeconds <= 0) {
+      this.current.copy(target).normalize();
+      this.hasValue = true;
+      return this.current;
+    }
+
+    const dist = this.current.distanceTo(target);
+    const speed = deltaSeconds > 0 ? dist / deltaSeconds : 0;
+    const cutoff = this.minCutoff + this.beta * speed;
+    const alpha = THREE.MathUtils.clamp(
+      1 - Math.exp(-2 * Math.PI * cutoff * deltaSeconds),
+      0.08,
+      1.0,
+    );
+
+    this.current.lerp(target, alpha).normalize();
+    return this.current;
+  }
+}
+
 const TORSO_ALIGNMENT_WEIGHTS = [
   ["hips", 0.35],
   ["spine", 0.65],
@@ -164,6 +238,16 @@ export class MotionRetargeter {
     this.torsoEuler = new THREE.Euler(0, 0, 0, "YXZ");
     this.delta = new THREE.Quaternion();
     this.tracked = false;
+    this.torsoFilter = new AdaptiveQuaternionFilter(1.5, 6.0);
+    this.headFilter = new AdaptiveQuaternionFilter(1.5, 6.0);
+    this.segmentFilters = new Map();
+    this.segmentLostFrames = new Map();
+    for (const [role] of SEGMENTS) {
+      this.segmentFilters.set(role, new AdaptiveDirectionFilter(1.8, 7.0));
+      this.segmentLostFrames.set(role, 0);
+    }
+    this.torsoLostFrames = 0;
+    this.headLostFrames = 0;
     this.diagnostics = {
       modelForward: new THREE.Vector3(0, 0, 1),
       trackedLeftShoulder: new THREE.Vector3(),
@@ -270,6 +354,16 @@ export class MotionRetargeter {
     this.root.updateMatrixWorld(true);
     this.filteredTorsoFrame.copy(this.restTorsoFrame);
     this.headRelativeFiltered.identity();
+    this.torsoFilter.reset();
+    this.headFilter.reset();
+    for (const filter of this.segmentFilters.values()) {
+      filter.reset();
+    }
+    for (const role of this.segmentLostFrames.keys()) {
+      this.segmentLostFrames.set(role, 0);
+    }
+    this.torsoLostFrames = 0;
+    this.headLostFrames = 0;
     this.updateTorsoDiagnostics();
     this.diagnostics.headYaw = 0;
     this.diagnostics.headPitch = 0;
@@ -301,12 +395,11 @@ export class MotionRetargeter {
 
   update(landmarks, worldLandmarks, deltaSeconds) {
     const delta = Math.min(Math.max(deltaSeconds ?? 0, 0), 0.1);
-    // Highly responsive tracking rate (32 rad/s) for fast, natural mocap following MediaPipe
     const smoothing = delta > 0 ? (1 - Math.exp(-32 * delta)) : 1.0;
     let updated = false;
 
     if (landmarks && worldLandmarks) {
-      const torsoUpdated = this.updateTorso(worldLandmarks, smoothing);
+      const torsoUpdated = this.updateTorso(worldLandmarks, delta, smoothing);
       if (!torsoUpdated) this.restoreTorso(smoothing);
       updated = torsoUpdated || updated;
 
@@ -320,9 +413,17 @@ export class MotionRetargeter {
           !isLandmarkUsable(worldLandmarks[start], CONFIDENCE_THRESHOLD) ||
           !isLandmarkUsable(worldLandmarks[end], CONFIDENCE_THRESHOLD)
         ) {
+          const lostCount = (this.segmentLostFrames.get(role) || 0) + 1;
+          this.segmentLostFrames.set(role, lostCount);
+          if (lostCount <= 4) {
+            // Absorb 1-4 frame dropouts / sensor noise without snapping to rest
+            continue;
+          }
           this.restoreBone(bone, smoothing);
           continue;
         }
+        this.segmentLostFrames.set(role, 0);
+
         this.direction.set(
           worldLandmarks[end].x - worldLandmarks[start].x,
           worldLandmarks[end].y - worldLandmarks[start].y,
@@ -338,15 +439,20 @@ export class MotionRetargeter {
           continue;
         }
 
-        this.delta.setFromUnitVectors(restDirections.local, this.direction);
+        const segmentFilter = this.segmentFilters.get(role);
+        const filteredDir = segmentFilter
+          ? segmentFilter.filter(this.direction, delta)
+          : this.direction;
+
+        this.delta.setFromUnitVectors(restDirections.local, filteredDir);
         this.desiredWorld
           .copy(this.delta)
           .multiply(this.restWorld.get(bone));
-        this.applyWorldRotation(bone, this.desiredWorld, smoothing);
+        this.applyWorldRotation(bone, this.desiredWorld, 1.0);
         updated = true;
       }
 
-      const headUpdated = this.updateHead(worldLandmarks, smoothing);
+      const headUpdated = this.updateHead(worldLandmarks, delta, smoothing);
       if (!headUpdated) this.restoreHead(smoothing);
       updated = headUpdated || updated;
     }
@@ -364,13 +470,18 @@ export class MotionRetargeter {
     return updated;
   }
 
-  updateTorso(worldLandmarks, smoothing) {
+  updateTorso(worldLandmarks, delta = 0.016, smoothing = 1.0) {
     if (
       !isLandmarkUsable(worldLandmarks[11], CONFIDENCE_THRESHOLD) ||
       !isLandmarkUsable(worldLandmarks[12], CONFIDENCE_THRESHOLD)
     ) {
+      this.torsoLostFrames = (this.torsoLostFrames || 0) + 1;
+      if (this.torsoLostFrames <= 3) {
+        return true;
+      }
       return false;
     }
+    this.torsoLostFrames = 0;
 
     convertMediaPipeWorldVector(worldLandmarks[11], this.leftShoulder);
     convertMediaPipeWorldVector(worldLandmarks[12], this.rightShoulder);
@@ -435,15 +546,7 @@ export class MotionRetargeter {
     this.torsoFrameMatrix.makeBasis(this.torsoLateral, this.frameUp, this.torsoForward);
     this.measuredTorsoFrame.setFromRotationMatrix(this.torsoFrameMatrix);
 
-    if (this.filteredTorsoFrame.dot(this.measuredTorsoFrame) < 0) {
-      this.measuredTorsoFrame.set(
-        -this.measuredTorsoFrame.x,
-        -this.measuredTorsoFrame.y,
-        -this.measuredTorsoFrame.z,
-        -this.measuredTorsoFrame.w,
-      );
-    }
-    this.filteredTorsoFrame.slerp(this.measuredTorsoFrame, smoothing);
+    this.filteredTorsoFrame.copy(this.torsoFilter.filter(this.measuredTorsoFrame, delta));
     this.torsoDelta.copy(this.filteredTorsoFrame).multiply(this.restTorsoFrameInverse);
     this.updateTorsoDiagnostics();
 
@@ -453,8 +556,7 @@ export class MotionRetargeter {
       if (!bone || !restWorld) continue;
       this.weightedTorsoDelta.identity().slerp(this.torsoDelta, weight);
       this.desiredWorld.copy(this.weightedTorsoDelta).multiply(restWorld);
-      // filteredTorsoFrame is already smoothed to eliminate jitter;
-      // apply directly to avoid double-damping latency
+      // filteredTorsoFrame is adaptively filtered; apply directly to eliminate latency
       this.applyWorldRotation(bone, this.desiredWorld, 1.0);
     }
     return true;
@@ -478,13 +580,14 @@ export class MotionRetargeter {
 
   restoreTorso(smoothing) {
     this.filteredTorsoFrame.slerp(this.restTorsoFrame, smoothing * 0.55);
+    this.torsoFilter.reset();
     this.updateTorsoDiagnostics();
     for (const [role] of TORSO_ALIGNMENT_WEIGHTS) {
       this.restoreBone(this.mapping[role], smoothing);
     }
   }
 
-  updateHead(worldLandmarks, smoothing) {
+  updateHead(worldLandmarks, delta = 0.016, smoothing = 1.0) {
     const head = this.mapping.head;
     if (
       !head ||
@@ -493,8 +596,14 @@ export class MotionRetargeter {
       !isLandmarkUsable(worldLandmarks[7], CONFIDENCE_THRESHOLD) ||
       !isLandmarkUsable(worldLandmarks[8], CONFIDENCE_THRESHOLD)
     ) {
+      this.headLostFrames = (this.headLostFrames || 0) + 1;
+      if (this.headLostFrames <= 3) {
+        return true;
+      }
       return false;
     }
+    this.headLostFrames = 0;
+
     convertMediaPipeWorldVector(worldLandmarks[7], this.leftEar);
     convertMediaPipeWorldVector(worldLandmarks[8], this.rightEar);
     convertMediaPipeWorldVector(worldLandmarks[0], this.nose);
@@ -529,15 +638,8 @@ export class MotionRetargeter {
       .copy(this.filteredTorsoFrame)
       .invert()
       .multiply(this.measuredHeadFrame);
-    if (this.headRelativeFiltered.dot(this.headRelativeTarget) < 0) {
-      this.headRelativeTarget.set(
-        -this.headRelativeTarget.x,
-        -this.headRelativeTarget.y,
-        -this.headRelativeTarget.z,
-        -this.headRelativeTarget.w,
-      );
-    }
-    this.headRelativeFiltered.slerp(this.headRelativeTarget, smoothing);
+
+    this.headRelativeFiltered.copy(this.headFilter.filter(this.headRelativeTarget, delta));
     this.headEuler.setFromQuaternion(this.headRelativeFiltered, "YXZ");
     this.diagnostics.headYaw = this.headEuler.y;
     this.diagnostics.headPitch = this.headEuler.x;
@@ -551,14 +653,14 @@ export class MotionRetargeter {
       .copy(this.torsoDelta)
       .multiply(this.headRelativeFiltered)
       .multiply(this.restWorld.get(head));
-    // headRelativeFiltered is already smoothed to eliminate jitter;
-    // apply directly to avoid double-damping latency
+    // headRelativeFiltered is adaptively filtered; apply directly to eliminate latency
     this.applyWorldRotation(head, this.desiredWorld, 1.0);
     return true;
   }
 
   restoreHead(smoothing) {
     this.headRelativeFiltered.slerp(this.identityQuaternion, smoothing * 0.55);
+    this.headFilter.reset();
     this.restoreBone(this.mapping.head, smoothing);
     this.headEuler.setFromQuaternion(this.headRelativeFiltered, "YXZ");
     this.diagnostics.headYaw = this.headEuler.y;

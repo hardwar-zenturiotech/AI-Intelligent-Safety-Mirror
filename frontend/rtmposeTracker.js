@@ -846,12 +846,17 @@ export class UnifiedPoseTracker {
     this.preferredEngine = options.preferredEngine || "mediapipe";
     this.activeEngine = "mediapipe";
     this.onStatus = options.onStatus || (() => {});
+    this.bodyPartEngine = options.bodyPartEngine || null;
     this.rtmTracker = null;
     this.rtm3DTracker = null;
     this.rtmw3dTracker = null;
     this.mediaPipeTracker = null;
     this.lastResult = { landmarks: null, worldLandmarks: null };
     this.rtmErrorLogged = false;
+  }
+
+  setBodyPartEngine(engine) {
+    this.bodyPartEngine = engine;
   }
 
   async init() {
@@ -869,7 +874,9 @@ export class UnifiedPoseTracker {
     }
 
     // 2. If a different engine is preferred, attempt activation
-    if (this.preferredEngine === "rtmw3d") {
+    if (this.preferredEngine === "bodypix") {
+      await this.setEngine("bodypix");
+    } else if (this.preferredEngine === "rtmw3d") {
       await this.setEngine("rtmw3d");
     } else if (this.preferredEngine === "rtmpose3d") {
       await this.setEngine("rtmpose3d");
@@ -879,7 +886,21 @@ export class UnifiedPoseTracker {
   }
 
   async setEngine(engineName) {
-    if (engineName === "rtmw3d") {
+    if (engineName === "bodypix") {
+      this.activeEngine = "bodypix";
+      if (this.bodyPartEngine) {
+        if (!this.bodyPartEngine.ready && !this.bodyPartEngine.loading) {
+          await this.bodyPartEngine.init();
+        }
+        this.bodyPartEngine.enabled = true;
+      }
+      this.onStatus({
+        state: "ready",
+        engine: "bodypix",
+        message: "BodyPix engine active (TensorFlow.js WebGL GPU)",
+      });
+      return;
+    } else if (engineName === "rtmw3d") {
       if (this.rtmw3dTracker) {
         this.activeEngine = "rtmw3d";
         this.onStatus({
@@ -973,7 +994,18 @@ export class UnifiedPoseTracker {
   }
 
   detect(video, timestamp) {
-    if (this.activeEngine === "rtmw3d" && this.rtmw3dTracker) {
+    if (this.activeEngine === "bodypix" && this.bodyPartEngine) {
+      try {
+        const result = this.bodyPartEngine.detect(video, timestamp);
+        if (result && result.landmarks) {
+          this.lastResult = result;
+          return result;
+        }
+      } catch (err) {
+        console.warn("BodyPix inference error:", err);
+      }
+      return this.lastResult;
+    } else if (this.activeEngine === "rtmw3d" && this.rtmw3dTracker) {
       try {
         const result = this.rtmw3dTracker.detect(video, timestamp);
         if (result && result.landmarks) {

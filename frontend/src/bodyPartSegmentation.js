@@ -13,7 +13,12 @@
 
 import * as tf from "@tensorflow/tfjs-core";
 import "@tensorflow/tfjs-backend-webgl";
+import "@tensorflow/tfjs-backend-cpu";
 import { load as loadBodyPix } from "@tensorflow-models/body-segmentation/dist/body_pix/segmenter.js";
+import {
+  convertCocoToMediaPipeLandmarks,
+  OneEuroPointFilter,
+} from "../rtmposeTracker.js";
 
 export const SupportedModels = {
   BodyPix: "BodyPix",
@@ -160,7 +165,7 @@ export class BodyPartSegmentationEngine {
       quantBytes: options.quantBytes || 2,
       internalResolution: options.internalResolution || "medium",
       segmentationThreshold: options.segmentationThreshold ?? 0.5,
-      targetFps: options.targetFps || 15,
+      targetFps: options.targetFps || 60,
       debugMode: options.debugMode || "overlay", // "overlay" | "segmentation-only" | "parts" | "off"
       selectedPartGroup: options.selectedPartGroup || "all", // "all" | "head" | "torso" | "leftArm" | "rightArm" | "leftLeg" | "rightLeg"
       opacity: options.opacity ?? 0.65,
@@ -177,6 +182,9 @@ export class BodyPartSegmentationEngine {
     // Measurement & state
     this.latestResult = null;
     this.latestMaskData = null;
+    this.latestRawPartData = null;
+    this.latestPoseResult = { landmarks: null, worldLandmarks: null };
+    this.latestBounds = null;
     this.outputWidth = 0;
     this.outputHeight = 0;
     this.peopleCount = 0;
@@ -186,6 +194,16 @@ export class BodyPartSegmentationEngine {
     this.fpsStartTime = performance.now();
     this.statusListeners = new Set();
     this.enabled = true;
+
+    // 1-Euro adaptive filters for smooth 33-point pose keypoints
+    this.landmarkFilters = Array.from(
+      { length: 33 },
+      () => new OneEuroPointFilter(1.2, 0.007),
+    );
+
+    // Fast 32-bit LUT cache for zero-GC single-pass pixel rendering
+    this._cachedLutKey = "";
+    this._cachedLut32 = null;
 
     // Internal offscreen buffer for compositing masks without GC churn
     if (typeof document !== "undefined") {
@@ -214,8 +232,8 @@ export class BodyPartSegmentationEngine {
   }
 
   /**
-   * Initializes the WebGL backend and loads the BodyPix model.
-   * Handles initialization failures gracefully without crashing other systems.
+   * Initializes the WebGL backend with hardware GPU performance flags
+   * and loads the BodyPix model.
    */
   async init() {
     if (this.ready) return true;
@@ -229,8 +247,24 @@ export class BodyPartSegmentationEngine {
     });
 
     try {
-      // 1. Set WebGL backend and wait for TF readiness
-      await tf.setBackend("webgl");
+      // Configure high-performance WebGL GPU flags
+      try {
+        tf.env().set("WEBGL_PACK", true);
+        tf.env().set("WEBGL_FORCE_F16_TEXTURES", true);
+        tf.env().set("WEBGL_RENDER_FLOAT32_CAPABLE", true);
+        tf.env().set("WEBGL_FLUSH_THRESHOLD", 1);
+        tf.env().set("WEBGL_VERSION", 2);
+      } catch (envErr) {
+        console.warn("Could not set WebGL performance flags:", envErr);
+      }
+
+      // 1. Set WebGL backend (or available backend in headless test environments) and wait for TF readiness
+      const hasWebGL = Boolean(tf.findBackend("webgl"));
+      if (hasWebGL) {
+        await tf.setBackend("webgl");
+      } else if (tf.getBackend()) {
+        await tf.setBackend(tf.getBackend());
+      }
       await tf.ready();
 
       this.notifyStatus({
@@ -253,7 +287,7 @@ export class BodyPartSegmentationEngine {
       this.loading = false;
       this.notifyStatus({
         state: "ready",
-        message: "BodyPix body-part segmentation engine ready (WebGL)",
+        message: "BodyPix body-part segmentation engine ready (WebGL GPU Accelerated)",
         architecture: this.options.architecture,
       });
       return true;
@@ -271,7 +305,7 @@ export class BodyPartSegmentationEngine {
   }
 
   /**
-   * Performs real-time body-part segmentation on the active video frame.
+   * Performs real-time body-part segmentation & pose extraction on the active video frame.
    * Throttles inference according to targetFps and skips overlapping requests.
    *
    * @param {HTMLVideoElement} videoElement
@@ -290,10 +324,12 @@ export class BodyPartSegmentationEngine {
       return this.latestResult;
     }
 
-    // Throttle inference frequency independently from rendering rate
-    const minInterval = 1000 / this.options.targetFps;
-    if (timestamp - this.lastInferenceTime < minInterval) {
-      return this.latestResult;
+    // Unthrottled when targetFps >= 60; otherwise enforce minimum frame interval
+    if (this.options.targetFps < 60) {
+      const minInterval = 1000 / this.options.targetFps;
+      if (timestamp - this.lastInferenceTime < minInterval) {
+        return this.latestResult;
+      }
     }
 
     this.isInferring = true;
@@ -301,14 +337,46 @@ export class BodyPartSegmentationEngine {
     const tStart = performance.now();
 
     try {
-      // Segment body parts with single-person mode
-      const people = await this.segmenter.segmentPeople(videoElement, {
-        multiSegmentation: false,
-        segmentBodyParts: true,
-        flipHorizontal: false,
-        internalResolution: this.options.internalResolution,
-        segmentationThreshold: this.options.segmentationThreshold,
-      });
+      let width = 0;
+      let height = 0;
+      let rawData = null;
+      let allPoses = null;
+
+      // Fast-path: invoke underlying bodyPixModel directly to skip intermediate JS allocations
+      if (
+        this.segmenter.bodyPixModel &&
+        typeof this.segmenter.bodyPixModel.segmentPersonParts === "function"
+      ) {
+        const seg = await this.segmenter.bodyPixModel.segmentPersonParts(videoElement, {
+          internalResolution: this.options.internalResolution,
+          segmentationThreshold: this.options.segmentationThreshold,
+          maxDetections: 1,
+          scoreThreshold: 0.25,
+          nmsRadius: 20,
+        });
+        height = seg.height;
+        width = seg.width;
+        rawData = seg.data; // Int32Array
+        allPoses = seg.allPoses;
+      } else {
+        // Fallback to high-level segmentPeople API
+        const people = await this.segmenter.segmentPeople(videoElement, {
+          multiSegmentation: false,
+          segmentBodyParts: true,
+          flipHorizontal: false,
+          internalResolution: this.options.internalResolution,
+          segmentationThreshold: this.options.segmentationThreshold,
+        });
+
+        if (people && people.length > 0 && people[0].mask) {
+          const mask = people[0].mask;
+          const maskImageData = await mask.toImageData();
+          width = maskImageData.width;
+          height = maskImageData.height;
+          rawData = maskImageData.data; // Uint8ClampedArray RGBA
+          this.peopleCount = people.length;
+        }
+      }
 
       const tEnd = performance.now();
       this.inferenceLatencyMs = Math.round(tEnd - tStart);
@@ -322,20 +390,74 @@ export class BodyPartSegmentationEngine {
         this.fpsStartTime = tEnd;
       }
 
-      if (people && people.length > 0 && people[0].mask) {
-        const mask = people[0].mask;
-        const maskImageData = await mask.toImageData();
+      if (rawData && width > 0 && height > 0) {
+        this.outputWidth = width;
+        this.outputHeight = height;
+        this.latestRawPartData = rawData;
+        this.latestMaskData = { width, height, data: rawData };
+        this.peopleCount =
+          allPoses && allPoses.length > 0
+            ? allPoses.length
+            : (rawData.some ? (rawData.some((p) => p >= 0) ? 1 : 0) : 1);
 
-        this.latestMaskData = maskImageData;
-        this.outputWidth = maskImageData.width;
-        this.outputHeight = maskImageData.height;
-        this.peopleCount = people.length;
+        // Extract COCO-17 pose keypoints and map to MediaPipe 33-point landmarks
+        if (allPoses && allPoses.length > 0 && allPoses[0].keypoints) {
+          const primaryPose = allPoses[0];
+          const partMap = new Map();
+          for (const kp of primaryPose.keypoints) {
+            if (kp.part) partMap.set(kp.part.toLowerCase(), kp);
+          }
+
+          const COCO_PART_NAMES = [
+            "nose", "lefteye", "righteye", "leftear", "rightear",
+            "leftshoulder", "rightshoulder", "leftelbow", "rightelbow",
+            "leftwrist", "rightwrist", "lefthip", "righthip",
+            "leftknee", "rightknee", "leftankle", "rightankle"
+          ];
+
+          const cocoKeypoints = [];
+          for (let i = 0; i < 17; i++) {
+            const pName = COCO_PART_NAMES[i];
+            const kp = partMap.get(pName) || primaryPose.keypoints[i];
+            if (kp && kp.position) {
+              cocoKeypoints.push({
+                x: kp.position.x / width,
+                y: kp.position.y / height,
+                score: kp.score ?? 0.8,
+              });
+            } else {
+              cocoKeypoints.push({ x: 0.5, y: 0.5, score: 0 });
+            }
+          }
+
+          const mpPose = convertCocoToMediaPipeLandmarks(cocoKeypoints, width / height);
+          const tsSec = timestamp * 0.001;
+          const smoothedLandmarks = mpPose.landmarks.map((lm, idx) => {
+            if (lm.visibility < 0.1) return lm;
+            const filter = this.landmarkFilters[idx];
+            const pt = filter ? filter.filter(lm.x, lm.y, tsSec) : { x: lm.x, y: lm.y };
+            return { ...lm, x: pt.x, y: pt.y };
+          });
+
+          this.latestPoseResult = {
+            landmarks: smoothedLandmarks,
+            worldLandmarks: mpPose.worldLandmarks,
+            fps: this.fps,
+            latencyMs: this.inferenceLatencyMs,
+            timestamp: tEnd,
+          };
+        }
+
+        // Calculate silhouette bounding box for avatar scale validation and edge alignment
+        this.latestBounds = this.computeBounds();
 
         this.latestResult = {
           peopleCount: this.peopleCount,
-          maskImageData,
+          maskImageData: this.latestMaskData,
           width: this.outputWidth,
           height: this.outputHeight,
+          bounds: this.latestBounds,
+          pose: this.latestPoseResult,
           fps: this.fps,
           latencyMs: this.inferenceLatencyMs,
           timestamp: tEnd,
@@ -343,11 +465,15 @@ export class BodyPartSegmentationEngine {
       } else {
         this.peopleCount = 0;
         this.latestMaskData = null;
+        this.latestRawPartData = null;
+        this.latestBounds = null;
         this.latestResult = {
           peopleCount: 0,
           maskImageData: null,
           width: this.outputWidth,
           height: this.outputHeight,
+          bounds: null,
+          pose: { landmarks: null, worldLandmarks: null },
           fps: this.fps,
           latencyMs: this.inferenceLatencyMs,
           timestamp: tEnd,
@@ -363,7 +489,120 @@ export class BodyPartSegmentationEngine {
   }
 
   /**
-   * Renders the colored body-part segmentation overlay to a destination canvas.
+   * Synchronous/cached pose detection accessor matching UnifiedPoseTracker detect signature.
+   * Dispatches asynchronous inference if idle and returns latest pose result.
+   */
+  detect(videoElement, timestamp = performance.now()) {
+    if (this.ready && !this.isInferring && videoElement) {
+      void this.segment(videoElement, timestamp);
+    }
+    return this.latestPoseResult;
+  }
+
+  getPoseLandmarks() {
+    return this.latestPoseResult;
+  }
+
+  getSilhouetteBounds() {
+    return this.latestBounds;
+  }
+
+  /**
+   * Computes the bounding rectangle of the segmented person.
+   */
+  computeBounds() {
+    const data = this.latestRawPartData;
+    if (!data || !this.outputWidth || !this.outputHeight) return null;
+    const w = this.outputWidth;
+    const h = this.outputHeight;
+    const isRgba = data.length === w * h * 4;
+    let minX = w;
+    let maxX = 0;
+    let minY = h;
+    let maxY = 0;
+    let found = false;
+
+    if (isRgba) {
+      const alphaCutoff = Math.round(255 * this.options.segmentationThreshold);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const j = (y * w + x) * 4;
+          if (data[j + 3] >= alphaCutoff && data[j] >= 0 && data[j] <= 23) {
+            found = true;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+    } else {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const part = data[y * w + x];
+          if (part >= 0 && part <= 23) {
+            found = true;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+    }
+
+    if (!found) return null;
+    return {
+      minX,
+      maxX,
+      minY,
+      maxY,
+      width: maxX - minX,
+      height: maxY - minY,
+    };
+  }
+
+  /**
+   * Precomputes or returns the cached 32-bit little-endian color lookup table.
+   * Format: (Alpha << 24) | (Blue << 16) | (Green << 8) | Red
+   */
+  getOrCreateLUT32(mode, selectedGroup, opacity) {
+    const key = `${mode}_${selectedGroup}_${opacity}`;
+    if (this._cachedLutKey === key && this._cachedLut32) {
+      return this._cachedLut32;
+    }
+
+    const lut = new Uint32Array(24);
+    const alpha = mode === "segmentation-only" ? 255 : Math.round(255 * opacity);
+    const targetPartIds =
+      selectedGroup !== "all" && LIMB_GROUPS[selectedGroup]
+        ? new Set(LIMB_GROUPS[selectedGroup])
+        : null;
+
+    for (let id = 0; id < 24; id++) {
+      const col = DEFAULT_PART_COLORS[id] || { r: 255, g: 255, b: 255 };
+      if (targetPartIds) {
+        if (targetPartIds.has(id)) {
+          lut[id] = (alpha << 24) | (col.b << 16) | (col.g << 8) | col.r;
+        } else {
+          if (mode === "segmentation-only") {
+            lut[id] = (255 << 24) | (25 << 16) | (20 << 8) | 20;
+          } else {
+            lut[id] = (40 << 24) | (50 << 16) | (50 << 8) | 50;
+          }
+        }
+      } else {
+        lut[id] = (alpha << 24) | (col.b << 16) | (col.g << 8) | col.r;
+      }
+    }
+
+    this._cachedLutKey = key;
+    this._cachedLut32 = lut;
+    return lut;
+  }
+
+  /**
+   * Renders the colored body-part segmentation overlay using high-speed 32-bit LUT memory stores.
    * Matches video aspect ratio and coordinates cleanly.
    *
    * @param {HTMLCanvasElement} targetCanvas
@@ -402,85 +641,44 @@ export class BodyPartSegmentationEngine {
     }
 
     const imgData = this.cachedImageData;
-    const rawMask = maskData.data; // RGBA buffer from toImageData()
-    const outPixels = imgData.data;
+    const rawMask = maskData.data;
+    const out32 = new Uint32Array(imgData.data.buffer);
+    const mode = this.options.debugMode;
+    const isRgba = rawMask.length === w * h * 4;
     const alphaCutoff = Math.round(255 * this.options.segmentationThreshold);
-    const mode = this.options.debugMode; // "overlay" | "segmentation-only" | "parts"
-    const opacityAlpha = Math.round(255 * this.options.opacity);
-    const selectedGroup = this.options.selectedPartGroup;
-    const targetPartIds =
-      selectedGroup !== "all" && LIMB_GROUPS[selectedGroup]
-        ? new Set(LIMB_GROUPS[selectedGroup])
-        : null;
 
+    const lut = this.getOrCreateLUT32(mode, this.options.selectedPartGroup, this.options.opacity);
+    const bgWord = mode === "segmentation-only" ? ((255 << 24) | (18 << 16) | (15 << 8) | 12) : 0;
     const totalPixels = w * h;
-    for (let i = 0; i < totalPixels; i++) {
-      const j = i * 4;
-      const maskVal = rawMask[j];
-      const personAlpha = rawMask[j + 3];
 
-      if (personAlpha >= alphaCutoff && maskVal >= 0 && maskVal <= 23) {
-        const color = DEFAULT_PART_COLORS[maskVal] || { r: 255, g: 255, b: 255 };
-
-        if (targetPartIds) {
-          // Individual parts filtering mode
-          if (targetPartIds.has(maskVal)) {
-            outPixels[j] = color.r;
-            outPixels[j + 1] = color.g;
-            outPixels[j + 2] = color.b;
-            outPixels[j + 3] = mode === "segmentation-only" ? 255 : opacityAlpha;
-          } else {
-            // Demote unselected parts to faint ghost/dark
-            if (mode === "segmentation-only") {
-              outPixels[j] = 20;
-              outPixels[j + 1] = 20;
-              outPixels[j + 2] = 25;
-              outPixels[j + 3] = 255;
-            } else {
-              outPixels[j] = 50;
-              outPixels[j + 1] = 50;
-              outPixels[j + 2] = 50;
-              outPixels[j + 3] = 40;
-            }
-          }
+    if (isRgba) {
+      for (let i = 0; i < totalPixels; i++) {
+        const j = i * 4;
+        const part = rawMask[j];
+        const alpha = rawMask[j + 3];
+        if (alpha >= alphaCutoff && part >= 0 && part < 24) {
+          out32[i] = lut[part];
         } else {
-          // Full 24-part segmentation display
-          outPixels[j] = color.r;
-          outPixels[j + 1] = color.g;
-          outPixels[j + 2] = color.b;
-          outPixels[j + 3] = mode === "segmentation-only" ? 255 : opacityAlpha;
+          out32[i] = bgWord;
         }
-      } else {
-        // Background
-        if (mode === "segmentation-only") {
-          outPixels[j] = 12;
-          outPixels[j + 1] = 15;
-          outPixels[j + 2] = 18;
-          outPixels[j + 3] = 255;
+      }
+    } else {
+      for (let i = 0; i < totalPixels; i++) {
+        const part = rawMask[i];
+        if (part >= 0 && part < 24) {
+          out32[i] = lut[part];
         } else {
-          outPixels[j] = 0;
-          outPixels[j + 1] = 0;
-          outPixels[j + 2] = 0;
-          outPixels[j + 3] = 0;
+          out32[i] = bgWord;
         }
       }
     }
 
     this.renderCtx.putImageData(imgData, 0, 0);
 
-    // Draw composited mask onto destination targetCanvas
-    const targetCtx = targetCanvas.getContext("2d");
-    if (!targetCtx) return;
-
-    targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
-    targetCtx.imageSmoothingEnabled = true;
-    targetCtx.drawImage(
-      this.renderCanvas,
-      0,
-      0,
-      targetCanvas.width,
-      targetCanvas.height,
-    );
+    const ctx = targetCanvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+    ctx.drawImage(this.renderCanvas, 0, 0, targetCanvas.width, targetCanvas.height);
   }
 
   /**
@@ -500,11 +698,13 @@ export class BodyPartSegmentationEngine {
 
     const { width, height, data } = this.latestMaskData;
     const binary = new Uint8Array(width * height);
+    const isRgba = data.length === width * height * 4;
     const alphaCutoff = Math.round(255 * this.options.segmentationThreshold);
 
     for (let i = 0; i < binary.length; i++) {
-      const j = i * 4;
-      if (data[j + 3] >= alphaCutoff && data[j] === targetId) {
+      const part = isRgba ? data[i * 4] : data[i];
+      const alpha = isRgba ? data[i * 4 + 3] : (part >= 0 ? 255 : 0);
+      if (alpha >= alphaCutoff && part === targetId) {
         binary[i] = 1;
       }
     }
@@ -522,11 +722,13 @@ export class BodyPartSegmentationEngine {
     const partSet = new Set(LIMB_GROUPS[limbName]);
     const { width, height, data } = this.latestMaskData;
     const binary = new Uint8Array(width * height);
+    const isRgba = data.length === width * height * 4;
     const alphaCutoff = Math.round(255 * this.options.segmentationThreshold);
 
     for (let i = 0; i < binary.length; i++) {
-      const j = i * 4;
-      if (data[j + 3] >= alphaCutoff && partSet.has(data[j])) {
+      const part = isRgba ? data[i * 4] : data[i];
+      const alpha = isRgba ? data[i * 4 + 3] : (part >= 0 ? 255 : 0);
+      if (alpha >= alphaCutoff && partSet.has(part)) {
         binary[i] = 1;
       }
     }
@@ -562,16 +764,28 @@ export class BodyPartSegmentationEngine {
     const { width, height, data } = this.latestMaskData;
     const px = Math.min(Math.max(Math.floor(normX * width), 0), width - 1);
     const py = Math.min(Math.max(Math.floor(normY * height), 0), height - 1);
-    const idx = (py * width + px) * 4;
-
+    const isRgba = data.length === width * height * 4;
+    const idx = isRgba ? (py * width + px) * 4 : (py * width + px);
     const alphaCutoff = Math.round(255 * this.options.segmentationThreshold);
-    if (data[idx + 3] >= alphaCutoff) {
+
+    if (isRgba) {
+      if (data[idx + 3] >= alphaCutoff) {
+        const id = data[idx];
+        return {
+          id,
+          name: PART_NAMES[id] || "unknown",
+          isPerson: true,
+        };
+      }
+    } else {
       const id = data[idx];
-      return {
-        id,
-        name: PART_NAMES[id] || "unknown",
-        isPerson: true,
-      };
+      if (id >= 0 && id <= 23) {
+        return {
+          id,
+          name: PART_NAMES[id] || "unknown",
+          isPerson: true,
+        };
+      }
     }
     return { id: -1, name: "background", isPerson: false };
   }
@@ -586,6 +800,13 @@ export class BodyPartSegmentationEngine {
 
   setTargetFps(fps) {
     this.options.targetFps = Math.max(1, Math.min(fps, 60));
+  }
+
+  setInternalResolution(resolution) {
+    const valid = ["low", "medium", "high", "full"];
+    if (valid.includes(resolution)) {
+      this.options.internalResolution = resolution;
+    }
   }
 
   setOpacity(opacity) {

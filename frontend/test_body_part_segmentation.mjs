@@ -123,6 +123,30 @@ assert(engine.options.selectedPartGroup === "leftArm", "setSelectedPartGroup wor
 engine.setTargetFps(20);
 assert(engine.options.targetFps === 20, "setTargetFps works.");
 
+engine.setInternalResolution("low");
+assert(engine.options.internalResolution === "low", "setInternalResolution('low') updates resolution for GPU acceleration.");
+
+// 7. Test 32-bit Fast Color LUT Generation
+const lut32 = engine.getOrCreateLUT32("overlay", "all", 0.65);
+assert(lut32 instanceof Uint32Array && lut32.length === 24, "Fast 32-bit LUT generated with 24 precomputed colors.");
+assert(lut32[0] !== 0, "Head color in 32-bit LUT is non-zero.");
+
+// 8. Test Silhouette Bounds Computation from Segmentation
+engine.latestRawPartData = synthData;
+engine.outputWidth = width;
+engine.outputHeight = height;
+const bounds = engine.computeBounds();
+assert(bounds !== null, "computeBounds returned valid bounding box.");
+assert(bounds.minX === 2 && bounds.maxX === 7, "Bounds minX/maxX accurately bounded detected pixels.");
+assert(bounds.minY === 2 && bounds.maxY === 7, "Bounds minY/maxY accurately bounded detected pixels.");
+
+// 9. Test UnifiedPoseTracker with BodyPix Engine Selection
+const { UnifiedPoseTracker } = await import("./rtmposeTracker.js");
+const unified = new UnifiedPoseTracker({ preferredEngine: "bodypix", bodyPartEngine: engine });
+assert(unified.preferredEngine === "bodypix", "UnifiedPoseTracker accepts 'bodypix' as preferred engine.");
+await unified.setEngine("bodypix");
+assert(unified.activeEngine === "bodypix", "UnifiedPoseTracker successfully switches to 'bodypix'.");
+
 engine.close();
 assert(!engine.enabled && !engine.ready, "Engine closes and marks ready/enabled false.");
 

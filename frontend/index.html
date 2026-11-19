@@ -86,6 +86,7 @@
               <span>Pose tracking engine</span>
               <select id="trackingEngine">
                 <option value="mediapipe" selected>MediaPipe 3D Pose (Smooth &amp; Stable - Recommended)</option>
+                <option value="bodypix">TensorFlow BodyPix (Segmentation &amp; 2D Pose - High GPU)</option>
                 <option value="rtmw3d">RTMW3D (3D)</option>
                 <option value="rtmpose3d">RTMPose 3D (OpenMMLab SimCC-3D)</option>
                 <option value="rtmpose">RTMPose 2D (OpenMMLab 2D)</option>
@@ -163,6 +164,14 @@
                 <label><input id="enableBodyPixSegmentation" type="checkbox" checked /> BodyPix edge &amp; occlusion</label>
                 <label><input id="showBodyPixEdges" type="checkbox" checked /> Show edge contours</label>
                 <label><input id="enableBodyPartSegmentation" type="checkbox" checked /> BodyPix 24 body-part segmentation</label>
+                <label class="inline-select" for="bodyPartResolution">
+                  <span>GPU Speed:</span>
+                  <select id="bodyPartResolution">
+                    <option value="low">Fastest GPU (0.25 - High FPS)</option>
+                    <option value="medium" selected>Balanced (0.50)</option>
+                    <option value="high">High Detail (0.75)</option>
+                  </select>
+                </label>
                 <label class="inline-select" for="bodyPartDebugMode">
                   <span>Visual mode:</span>
                   <select id="bodyPartDebugMode">

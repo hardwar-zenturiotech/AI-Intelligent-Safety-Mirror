@@ -78,6 +78,7 @@ const bodyPixFps = document.querySelector("#bodyPixFps");
 // TensorFlow BodyPix 24 Body-Part Segmentation
 const bodyPartSegmentationCanvas = document.querySelector("#bodyPartSegmentationCanvas");
 const enableBodyPartSegmentation = document.querySelector("#enableBodyPartSegmentation");
+const bodyPartResolution = document.querySelector("#bodyPartResolution");
 const bodyPartDebugMode = document.querySelector("#bodyPartDebugMode");
 const bodyPartFilter = document.querySelector("#bodyPartFilter");
 const bodyPartFps = document.querySelector("#bodyPartFps");
@@ -89,7 +90,8 @@ const bodyPartEngine = new BodyPartSegmentationEngine({
   outputStride: 16,
   multiplier: 0.75,
   quantBytes: 2,
-  targetFps: 12,
+  internalResolution: bodyPartResolution ? bodyPartResolution.value : "medium",
+  targetFps: 60,
   debugMode: bodyPartDebugMode ? bodyPartDebugMode.value : "overlay",
   selectedPartGroup: bodyPartFilter ? bodyPartFilter.value : "all",
   opacity: 0.65,
@@ -99,6 +101,10 @@ bodyPartEngine.onStatus((status) => {
   if (bodyPartFps) {
     bodyPartFps.textContent = status.message || `BodyPix Parts: ${status.state}`;
   }
+});
+
+bodyPartResolution?.addEventListener("change", (e) => {
+  bodyPartEngine.setInternalResolution(e.target.value);
 });
 
 enableBodyPartSegmentation?.addEventListener("change", (e) => {
@@ -905,8 +911,64 @@ function updatePoseFrame(frameTime = performance.now()) {
     recordPoseFrame(now, "pose");
     avatar.update(pose.landmarks, pose.worldLandmarks, cameraPreview);
 
-    // Asynchronous BodyPix segmentation & edge detection pass
-    if (enableBodyPixSegmentation?.checked && bodyPixSegmenter.ready) {
+    // BodyPix Segmentation & Pose processing
+    const isBodyPixEngine = poseTracker.activeEngine === "bodypix";
+    const shouldRunBodyParts = isBodyPixEngine || (enableBodyPartSegmentation?.checked && bodyPartEngine.ready);
+
+    // Primary BodyPix 24 Body-Part pass (single GPU inference serving both pose and segmentation)
+    if (shouldRunBodyParts && bodyPartEngine.ready) {
+      bodyPartEngine
+        .segment(cameraPreview, now)
+        .then((partResult) => {
+          if (!partResult) return;
+
+          // Provide silhouette bounds to 3D avatar for occlusion and scale calibration
+          if (partResult.bounds) {
+            avatar.setSegmentationBounds(partResult.bounds);
+          }
+
+          if (
+            bodyPartSegmentationCanvas &&
+            (bodyPartEngine.options.debugMode !== "off" || isBodyPixEngine)
+          ) {
+            bodyPartSegmentationCanvas.hidden = false;
+            const rect = cameraStage.getBoundingClientRect();
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+            const w = Math.round(rect.width * pixelRatio);
+            const h = Math.round(rect.height * pixelRatio);
+            if (
+              bodyPartSegmentationCanvas.width !== w ||
+              bodyPartSegmentationCanvas.height !== h
+            ) {
+              bodyPartSegmentationCanvas.width = w;
+              bodyPartSegmentationCanvas.height = h;
+            }
+            bodyPartEngine.renderOverlay(bodyPartSegmentationCanvas, cameraPreview);
+          } else if (bodyPartSegmentationCanvas) {
+            bodyPartSegmentationCanvas.hidden = true;
+          }
+
+          if (bodyPartFps) {
+            bodyPartFps.textContent = `BodyPix Parts: ${bodyPartEngine.fps || "--"} FPS (${bodyPartEngine.inferenceLatencyMs}ms)`;
+          }
+          if (bodyPartDims) {
+            bodyPartDims.textContent = `Dims: ${partResult.width}×${partResult.height}`;
+          }
+          if (bodyPartPeople) {
+            bodyPartPeople.textContent = `People: ${partResult.peopleCount}`;
+          }
+
+          if (isBodyPixEngine && poseFps) {
+            poseFps.textContent = `FPS: ${bodyPartEngine.fps || "--"}`;
+          }
+        })
+        .catch((e) => console.warn("BodyPix body-part segmentation error:", e));
+    } else if (bodyPartSegmentationCanvas) {
+      bodyPartSegmentationCanvas.hidden = true;
+    }
+
+    // Edge contours pass: only run secondary model if bodyPartEngine is NOT running, preventing GPU contention
+    if (!shouldRunBodyParts && enableBodyPixSegmentation?.checked && bodyPixSegmenter.ready) {
       bodyPixSegmenter
         .segment(cameraPreview)
         .then((segResult) => {
@@ -935,50 +997,8 @@ function updatePoseFrame(frameTime = performance.now()) {
           }
         })
         .catch((e) => console.warn("BodyPix frame error:", e));
-    } else if (bodyPixEdgeCanvas) {
-      bodyPixEdgeCanvas.hidden = true;
-    }
-
-    // Asynchronous BodyPix 24 Body-Part Segmentation pass
-    if (enableBodyPartSegmentation?.checked && bodyPartEngine.ready) {
-      bodyPartEngine
-        .segment(cameraPreview, now)
-        .then((partResult) => {
-          if (!partResult) return;
-          if (
-            bodyPartSegmentationCanvas &&
-            bodyPartEngine.options.debugMode !== "off"
-          ) {
-            bodyPartSegmentationCanvas.hidden = false;
-            const rect = cameraStage.getBoundingClientRect();
-            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-            const w = Math.round(rect.width * pixelRatio);
-            const h = Math.round(rect.height * pixelRatio);
-            if (
-              bodyPartSegmentationCanvas.width !== w ||
-              bodyPartSegmentationCanvas.height !== h
-            ) {
-              bodyPartSegmentationCanvas.width = w;
-              bodyPartSegmentationCanvas.height = h;
-            }
-            bodyPartEngine.renderOverlay(bodyPartSegmentationCanvas, cameraPreview);
-          } else if (bodyPartSegmentationCanvas) {
-            bodyPartSegmentationCanvas.hidden = true;
-          }
-
-          if (bodyPartFps) {
-            bodyPartFps.textContent = `BodyPix Parts: ${bodyPartEngine.fps || "--"} FPS (${bodyPartEngine.inferenceLatencyMs}ms)`;
-          }
-          if (bodyPartDims) {
-            bodyPartDims.textContent = `Dims: ${partResult.width}×${partResult.height}`;
-          }
-          if (bodyPartPeople) {
-            bodyPartPeople.textContent = `People: ${partResult.peopleCount}`;
-          }
-        })
-        .catch((e) => console.warn("BodyPix body-part segmentation error:", e));
-    } else if (bodyPartSegmentationCanvas) {
-      bodyPartSegmentationCanvas.hidden = true;
+    } else if (!showBodyPixEdges?.checked || shouldRunBodyParts) {
+      if (bodyPixEdgeCanvas) bodyPixEdgeCanvas.hidden = true;
     }
 
     updateRetargetingReadout();
@@ -1000,6 +1020,8 @@ function updatePoseFrame(frameTime = performance.now()) {
     drawPoseDebug(landmarks);
     if (poseTracker.activeEngine === "rtmw3d" && pose.inferenceFps) {
       poseFps.textContent = `FPS: ${pose.inferenceFps} [${(pose.backend || "WASM").toUpperCase()}] / ${avatar.fps || "--"} render`;
+    } else if (poseTracker.activeEngine === "bodypix" && bodyPartEngine) {
+      poseFps.textContent = `FPS: ${bodyPartEngine.fps || "--"} [WebGL GPU] (${bodyPartEngine.inferenceLatencyMs}ms)`;
     }
     const trackedIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
     const visible = trackedIndices.filter((index) =>
@@ -1081,6 +1103,7 @@ function loadPoseTracker() {
     const preferredEngine = selectedTrackingEngine || (trackingEngine ? trackingEngine.value : "mediapipe");
     poseTrackerPromise = UnifiedPoseTracker.create({
       preferredEngine,
+      bodyPartEngine,
       onStatus: (status) => {
         setPoseStatus(status.message, status.state);
       },
@@ -1113,6 +1136,19 @@ trackingEngine?.addEventListener("change", async (event) => {
     }
     // Clear 2D overlay to avoid frozen frames between engines
     drawPoseDebug([]);
+
+    if (engine === "bodypix") {
+      poseTracker.setBodyPartEngine(bodyPartEngine);
+      if (!bodyPartEngine.ready && !bodyPartEngine.loading) {
+        await bodyPartEngine.init();
+      }
+      bodyPartEngine.enabled = true;
+      if (enableBodyPartSegmentation) enableBodyPartSegmentation.checked = true;
+      if (bodyPartDebugMode && bodyPartDebugMode.value === "off") {
+        bodyPartDebugMode.value = "overlay";
+        bodyPartEngine.setDebugMode("overlay");
+      }
+    }
 
     await poseTracker.setEngine(engine);
 

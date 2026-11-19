@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --config vite.config.js",
     "build": "vite --config vite.config.js build",
-    "test": "node test_retargeting.mjs && node test_rtmpose.mjs && node test_rtmw3d.mjs && node test_avatar_scaling.mjs && node test_bodypix.mjs && node test_body_part_segmentation.mjs",
+    "test": "node test_retargeting.mjs && node test_rtmpose.mjs && node test_rtmw3d.mjs && node test_avatar_scaling.mjs && node test_bodypix.mjs && node test_body_part_segmentation.mjs && node test_emosh.mjs",
     "preview": "vite --config vite.config.js preview"
   },
   "dependencies": {

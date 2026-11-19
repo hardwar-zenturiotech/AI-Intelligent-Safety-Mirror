@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+emosh_service/.venv/
+emosh_service/inputs/
 .env
 node_modules/
 .vite/

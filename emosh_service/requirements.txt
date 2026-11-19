@@ -1,0 +1,8 @@
+# EMOSH-Tracker Service Requirements
+numpy>=1.24.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+# For full official PyTorch & SMPL-X temporal reconstruction:
+# torch>=2.2.0
+# pytorch3d>=0.7.5
+# smplx>=0.1.28

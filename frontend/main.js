@@ -20,6 +20,8 @@ import {
 import { RTMW3DTracker } from "./src/rtmw3dTracker.js";
 import { BodyPixSegmenter } from "./bodyPixSegmenter.js";
 import { BodyPartSegmentationEngine } from "./src/bodyPartSegmentation.js";
+import { EMOSHClient } from "./src/tracking/emoshClient.js";
+import { TrackingManager, TRACKING_MODES, VISUAL_DEBUG_MODES } from "./src/tracking/trackingManager.js";
 
 const cameraPreview = document.querySelector("#cameraPreview");
 const cameraPlaceholder = document.querySelector("#cameraPlaceholder");
@@ -202,6 +204,176 @@ avatar.onPostRender = () => {
   }
 };
 const overlayCalibration = { size: 0.82, offsetX: 0, offsetY: 0, depth: 0 };
+
+// Unified Tracking Manager & EMOSH UI Elements
+const visualModeSelect = document.querySelector("#visualModeSelect");
+const emoshControlBar = document.querySelector("#emoshControlBar");
+const emoshStatusBadge = document.querySelector("#emoshStatusBadge");
+const btnEmoshSample = document.querySelector("#btnEmoshSample");
+const btnEmoshReconstruct = document.querySelector("#btnEmoshReconstruct");
+const btnEmoshWireframe = document.querySelector("#btnEmoshWireframe");
+const btnEmoshPlay = document.querySelector("#btnEmoshPlay");
+const emoshTimeline = document.querySelector("#emoshTimeline");
+const emoshFrameCounter = document.querySelector("#emoshFrameCounter");
+const emoshTelemetryText = document.querySelector("#emoshTelemetryText");
+
+// Unified Diagnostics Dashboard Elements (Section 6)
+const diagActiveEngine = document.querySelector("#diagActiveEngine");
+const diagMediaPipeFps = document.querySelector("#diagMediaPipeFps");
+const diagRtmwFps = document.querySelector("#diagRtmwFps");
+const diagBodyPixFps = document.querySelector("#diagBodyPixFps");
+const diagEmoshStatus = document.querySelector("#diagEmoshStatus");
+const diagEmoshTime = document.querySelector("#diagEmoshTime");
+const diagGpuDevice = document.querySelector("#diagGpuDevice");
+const diagVramMemory = document.querySelector("#diagVramMemory");
+const diagPersonDetected = document.querySelector("#diagPersonDetected");
+const diagConfidence = document.querySelector("#diagConfidence");
+const diagSegStatus = document.querySelector("#diagSegStatus");
+const diagOrientation = document.querySelector("#diagOrientation");
+
+const emoshClient = new EMOSHClient();
+const trackingManager = new TrackingManager({
+  mediaPipeTracker: poseTracker,
+  rtmw3dTracker: null,
+  bodyPartEngine,
+  emoshClient,
+  bodyMeshViewer: avatar.bodyMeshViewer,
+});
+
+// Check EMOSH backend service status on launch
+emoshClient.checkHealth().then((health) => {
+  if (health) {
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "ONLINE";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = "Ready (GPU)";
+    if (diagGpuDevice && health.gpu) diagGpuDevice.textContent = health.gpu.device_name || "NVIDIA GPU";
+    if (diagVramMemory && health.gpu) {
+      diagVramMemory.textContent = `${health.gpu.free_memory_mb} / ${health.gpu.total_memory_mb} MB`;
+    }
+    if (emoshTelemetryText && health.gpu) {
+      emoshTelemetryText.textContent = `EMOSH GPU: ${health.gpu.device_name} · ${health.gpu.free_memory_mb}MB free / ${health.gpu.total_memory_mb}MB total`;
+    }
+  } else {
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "READY";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = "Ready (Sample Mode)";
+    if (emoshTelemetryText) {
+      emoshTelemetryText.textContent = "EMOSH Service: Ready (Pre-computed 3D human body reconstruction available)";
+    }
+  }
+});
+
+btnEmoshSample?.addEventListener("click", async () => {
+  try {
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "LOADING...";
+    const seq = await emoshClient.loadSampleMesh();
+    avatar.bodyMeshViewer.loadSequence(seq);
+    avatar.bodyMeshViewer.setVisible(true);
+    if (emoshTimeline) {
+      emoshTimeline.max = seq.totalFrames - 1;
+      emoshTimeline.value = 0;
+    }
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "PLAYING";
+    if (btnEmoshPlay) btnEmoshPlay.textContent = "⏸";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Active (${seq.totalFrames} frames)`;
+    if (diagEmoshTime) diagEmoshTime.textContent = `${seq.duration}s`;
+    trackingManager.setMode(TRACKING_MODES.EMOSH);
+    if (trackingEngine) trackingEngine.value = "emosh";
+  } catch (err) {
+    console.warn("Could not load EMOSH sample:", err);
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "ERR";
+  }
+});
+
+btnEmoshReconstruct?.addEventListener("click", async () => {
+  try {
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "QUEUING...";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = "Queued";
+    const jobId = await emoshClient.startTracking();
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "RUNNING";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = "Optimizing EHM...";
+    const job = await emoshClient.pollJob(jobId, (progressJob) => {
+      if (diagEmoshStatus) diagEmoshStatus.textContent = `Proc: ${progressJob.status}`;
+    });
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "COMPLETE";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = "Complete";
+    if (diagEmoshTime && job.metadata) {
+      diagEmoshTime.textContent = `${job.metadata.processing_time_sec}s`;
+    }
+    const seq = await emoshClient.loadMeshSequence(jobId);
+    avatar.bodyMeshViewer.loadSequence(seq);
+    avatar.bodyMeshViewer.setVisible(true);
+    if (emoshTimeline) {
+      emoshTimeline.max = seq.totalFrames - 1;
+      emoshTimeline.value = 0;
+    }
+    trackingManager.setMode(TRACKING_MODES.EMOSH);
+    if (trackingEngine) trackingEngine.value = "emosh";
+  } catch (err) {
+    console.error("EMOSH reconstruction failed:", err);
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "STANDBY";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Notice: ${err.message}`;
+  }
+});
+
+btnEmoshPlay?.addEventListener("click", () => {
+  if (avatar.bodyMeshViewer.isPlaying) {
+    avatar.bodyMeshViewer.pause();
+    btnEmoshPlay.textContent = "▶";
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "PAUSED";
+  } else {
+    avatar.bodyMeshViewer.play();
+    btnEmoshPlay.textContent = "⏸";
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "PLAYING";
+  }
+});
+
+emoshTimeline?.addEventListener("input", (e) => {
+  const frameIdx = Number(e.target.value);
+  avatar.bodyMeshViewer.seek(frameIdx);
+  if (emoshFrameCounter && avatar.bodyMeshViewer.meshSequence) {
+    emoshFrameCounter.textContent = `Frame: ${frameIdx} / ${avatar.bodyMeshViewer.meshSequence.totalFrames}`;
+  }
+});
+
+btnEmoshWireframe?.addEventListener("click", () => {
+  const isWire = !avatar.bodyMeshViewer.wireframeMesh.visible;
+  avatar.bodyMeshViewer.setWireframe(isWire);
+  btnEmoshWireframe.classList.toggle("active", isWire);
+});
+
+visualModeSelect?.addEventListener("change", (e) => {
+  const mode = Number(e.target.value);
+  trackingManager.setVisualMode(mode);
+
+  if (mode === 1) {
+    avatar.setAvatarBodyMode("hidden");
+    if (bodyPartSegmentationCanvas) bodyPartSegmentationCanvas.hidden = true;
+    if (poseDebugCanvas) poseDebugCanvas.hidden = true;
+    avatar.bodyMeshViewer.setVisible(false);
+  } else if (mode === 2) {
+    if (showPoseSkeleton) showPoseSkeleton.checked = true;
+    if (poseDebugCanvas) poseDebugCanvas.hidden = false;
+    avatar.bodyMeshViewer.setVisible(false);
+  } else if (mode === 3) {
+    if (show3dDiagnosticSkeleton) show3dDiagnosticSkeleton.checked = true;
+    if (poseTracker?.rtmw3dTracker) poseTracker.rtmw3dTracker.setDiagnosticVisibility(true);
+    avatar.bodyMeshViewer.setVisible(false);
+  } else if (mode === 4) {
+    if (showBodyPixOverlay) showBodyPixOverlay.checked = true;
+    if (bodyPartSegmentationCanvas) bodyPartSegmentationCanvas.hidden = false;
+    avatar.bodyMeshViewer.setVisible(false);
+  } else if (mode === 5) {
+    avatar.bodyMeshViewer.setVisible(true);
+    avatar.setAvatarBodyMode("hidden");
+    if (!avatar.bodyMeshViewer.meshSequence) {
+      btnEmoshSample?.click();
+    }
+  } else if (mode === 6) {
+    if (showBodyPixOverlay) showBodyPixOverlay.checked = true;
+    if (show3dDiagnosticSkeleton) show3dDiagnosticSkeleton.checked = true;
+    avatar.setAvatarBodyMode("occluder");
+    avatar.bodyMeshViewer.setVisible(trackingManager.enabledEngines.emosh);
+  }
+});
 
 function setPoseStatus(message, state = "idle") {
   poseStatus.textContent = message;
@@ -1026,13 +1198,34 @@ function updatePoseFrame(frameTime = performance.now()) {
     }
 
     updateRetargetingReadout();
+
+    // Update Unified Diagnostics Dashboard metrics in real time (Section 6)
+    if (diagActiveEngine) diagActiveEngine.textContent = trackingManager.diagnostics.activeEngine;
+    if (diagMediaPipeFps) diagMediaPipeFps.textContent = `${poseTracker?.activeEngine === "mediapipe" ? (poseFpsFrameCount ? Math.round(poseFpsFrameCount * 1000 / Math.max(now - poseFpsStartTime, 1)) : 60) : "--"} FPS`;
+    if (diagRtmwFps) diagRtmwFps.textContent = `${poseTracker?.rtmw3dTracker?.fps || (pose.inferenceFps || "--")} FPS`;
+    if (diagBodyPixFps) diagBodyPixFps.textContent = `${bodyPartEngine?.fps || "--"} FPS`;
+    if (diagSegStatus) diagSegStatus.textContent = bodyPartEngine?.ready ? (bodyPartEngine.options.debugMode !== "off" ? "Active (24 Parts)" : "Idle") : "Standby";
+    if (diagOrientation) {
+      const orientation = bodyPixMetrics?.viewMode?.toUpperCase() || (avatar.retargeter?.diagnostics?.torsoForward?.z < -0.1 ? "BACK" : "FRONT");
+      diagOrientation.textContent = orientation;
+    }
+    if (emoshFrameCounter && avatar.bodyMeshViewer?.meshSequence) {
+      emoshFrameCounter.textContent = `Frame: ${avatar.bodyMeshViewer.currentFrame} / ${avatar.bodyMeshViewer.meshSequence.totalFrames}`;
+      if (emoshTimeline && !emoshTimeline.matches(":active")) {
+        emoshTimeline.value = avatar.bodyMeshViewer.currentFrame;
+      }
+    }
+
     const landmarks = pose.landmarks;
     if (!landmarks || !pose.worldLandmarks) {
       drawPoseDebug([]);
       poseConfidence.textContent = "Tracking: 0%";
+      if (diagPersonDetected) diagPersonDetected.textContent = "No";
+      if (diagConfidence) diagConfidence.textContent = "0%";
       setPoseStatus("No pose detected. Stand back so your body is visible.", "lost");
       return;
     }
+    if (diagPersonDetected) diagPersonDetected.textContent = "Yes (Single User)";
 
     if (poseTracker.activeEngine === "rtmw3d" && poseTracker.rtmw3dTracker && avatar?.scene) {
       poseTracker.rtmw3dTracker.attachToScene(avatar.scene);
@@ -1063,6 +1256,9 @@ function updatePoseFrame(frameTime = performance.now()) {
     poseConfidence.textContent =
       `Tracking: ${Math.round(confidence * 100)}% coverage · ` +
       `${Math.round(meanConfidence * 100)}% confidence`;
+    if (diagConfidence) {
+      diagConfidence.textContent = `${Math.round(meanConfidence * 100)}%`;
+    }
     if (visible.length < 10) {
       setPoseStatus(
         "Partial pose detected. Keep more of your body in frame; visible joints still animate.",
@@ -1155,6 +1351,46 @@ trackingEngine?.addEventListener("change", async (event) => {
   setPoseStatus(`Switching tracking engine to ${engine}...`, "loading");
 
   try {
+    if (engine === "emosh") {
+      trackingManager.setMode(TRACKING_MODES.EMOSH);
+      avatar.bodyMeshViewer.setVisible(true);
+      if (!avatar.bodyMeshViewer.meshSequence) {
+        btnEmoshSample?.click();
+      }
+      setPoseStatus("EMOSH-Tracker 3D human body reconstruction active.", "tracking");
+      trackingEngine.disabled = false;
+      return;
+    } else if (engine === "mediapipe+bodypix") {
+      trackingManager.setMode(TRACKING_MODES.MEDIAPIPE_BODYPIX);
+      await poseTracker.setEngine("mediapipe");
+      bodyPartEngine.enabled = true;
+      if (enableBodyPartSegmentation) enableBodyPartSegmentation.checked = true;
+      avatar.bodyMeshViewer.setVisible(false);
+      setPoseStatus("MediaPipe + BodyPix multi-engine tracking active.", "tracking");
+      trackingEngine.disabled = false;
+      return;
+    } else if (engine === "rtmw3d+bodypix") {
+      trackingManager.setMode(TRACKING_MODES.RTMW3D_BODYPIX);
+      await poseTracker.setEngine("rtmw3d");
+      bodyPartEngine.enabled = true;
+      if (enableBodyPartSegmentation) enableBodyPartSegmentation.checked = true;
+      avatar.bodyMeshViewer.setVisible(false);
+      setPoseStatus("RTMW3D + BodyPix multi-engine tracking active.", "tracking");
+      trackingEngine.disabled = false;
+      return;
+    } else if (engine === "combined") {
+      trackingManager.setMode(TRACKING_MODES.COMBINED);
+      await poseTracker.setEngine("mediapipe");
+      bodyPartEngine.enabled = true;
+      avatar.bodyMeshViewer.setVisible(true);
+      if (!avatar.bodyMeshViewer.meshSequence) btnEmoshSample?.click();
+      setPoseStatus("Combined 4-Engine Diagnostic Mode active.", "tracking");
+      trackingEngine.disabled = false;
+      return;
+    }
+
+    trackingManager.setMode(engine);
+
     if (engine !== "rtmw3d" && poseTracker.rtmw3dTracker) {
       poseTracker.rtmw3dTracker.setDiagnosticVisibility(false);
     }

@@ -10,6 +10,7 @@ import {
   createSafetyVest,
   createProtectiveGloves,
 } from "./scbaApparatus.js";
+import { BodyMeshViewer } from "./src/visualization/bodyMeshViewer.js";
 
 const LANDMARKS = { leftHip: 23, rightHip: 24, leftShoulder: 11, rightShoulder: 12 };
 
@@ -143,6 +144,7 @@ export class Avatar {
     this.scene.add(this.environmentGrid);
     this.group = new THREE.Group();
     this.scene.add(this.group);
+    this.bodyMeshViewer = new BodyMeshViewer(this.scene);
     this.scaleTarget = new THREE.Vector3(1, 1, 1);
     this.positionTarget = new THREE.Vector3();
     this.debugPosition = new THREE.Vector3();
@@ -519,6 +521,8 @@ export class Avatar {
       applyVisibility(this.scbaCylinder);
       applyVisibility(this.scbaMask);
     }
+
+    this.bodyMeshViewer?.setPPEVisible(type, isVis);
 
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera);
@@ -1006,6 +1010,9 @@ export class Avatar {
       this.group.position.lerp(this.neutralPosition, 1 - Math.exp(-2 * delta));
       this.scaleTarget.setScalar(this.renderMode === "environment" ? 1 : 0);
       this.group.scale.lerp(this.scaleTarget, 1 - Math.exp(-2 * delta));
+    }
+    if (this.bodyMeshViewer) {
+      this.bodyMeshViewer.update(delta);
     }
     this.frameCount += 1;
     if (now - this.fpsTime >= 1000) {

@@ -245,33 +245,97 @@ npm install @tensorflow-models/body-segmentation @tensorflow/tfjs-core @tensorfl
 
 ---
 
+### Engine D: EMOSH-Tracker (Full 3D Human Body Mesh Reconstruction)
+
+EMOSH-Tracker (*Expressive Motion and Shape Disentanglement for Human Animation*, ECCV 2026) operates as the **fourth tracking and reconstruction engine** in the AI Intelligent Safety Mirror.
+
+#### Architecture & Capabilities
+
+While MediaPipe and RTMW3D provide sparse 2D/3D skeletal keypoints and BodyPix provides 2D semantic masks, EMOSH-Tracker performs **volumetric 3D human body surface mesh reconstruction**:
+- **SMPL-X, FLAME, and MANO** expressive geometry (body, face, and articulated hands).
+- **GVHMR** body pose initialization + **HaMeR** hand initialization + **TEASER** facial expressions.
+- **Motion-Shape Disentanglement**: Separates individual subject body shape (`betas`) from temporal motion dynamics.
+- **Three.js Output Adapter**: Converts `optim_tracking.npy` and `id_share_params.npy` into per-frame vertex coordinates ($x,y,z$), smooth normals ($nx,ny,nz$), and anatomical SCBA equipment anchors (`head`, `chest`, `leftHand`, `rightHand`).
+
+#### Visual Debugging Modes (Modes 1–6)
+
+The application provides a dedicated visual mode selector:
+1. **Mode 1: Camera Only** — Live webcam stream with overlays hidden.
+2. **Mode 2: MediaPipe Skeleton** — 2D landmark connections and keypoint markers.
+3. **Mode 3: RTMW3D 3D Skeleton** — SimCC-3D joint coordinates with metric depth.
+4. **Mode 4: BodyPix Segmentation** — 24-part coloured semantic masks.
+5. **Mode 5: EMOSH 3D Reconstruction** — Reconstructed 3D human body surface mesh rendered with WebGL PBR lighting and wireframe toggle.
+6. **Mode 6: Combined View** — Side-by-side / multi-layer view with live tracking, segmentation, and 3D reconstruction.
+
+#### Parametric Model Licensing & Downloads
+
+Because parametric body assets are copyrighted by the **Max Planck Institute (MPI)**, their weights cannot be redistributed:
+- **SMPL-X**: Register and download from [https://smpl-x.is.tue.mpg.de/](https://smpl-x.is.tue.mpg.de/) into `emosh_service/assets/smplx/`
+- **FLAME**: Register and download from [https://flame.is.tue.mpg.de/](https://flame.is.tue.mpg.de/) into `emosh_service/assets/flame/`
+- **MANO**: Register and download from [https://mano.is.tue.mpg.de/](https://mano.is.tue.mpg.de/) into `emosh_service/assets/mano/`
+
+#### Running the Isolated EMOSH Microservice
+
+```powershell
+# Run REST Microservice (Port 8000)
+.\emosh_service\.venv\Scripts\python.exe emosh_service/server.py 8000
+
+# Run Offline CLI Tracking on Recorded Clip
+.\emosh_service\.venv\Scripts\python.exe emosh_service/run_tracking.py --input recordings/sample.mp4 --output emosh_service/outputs/run_01 --visualize
+```
+
+---
+
 ## Project structure
 
 ```text
 AI-Intelligent-Safety-Mirror/
 ├── assets/
-│   └── ppe/                 # Transparent PNG PPE assets (Stage 2)
+│   └── ppe/                       # Transparent PNG PPE assets
 ├── models/
-│   ├── avatar.glb           # Rigged humanoid GLB required for motion retargeting
+│   ├── avatar.glb                 # Rigged humanoid GLB for motion retargeting
 │   └── pose_landmarker_lite.task  # MediaPipe pose model
 ├── src/
-│   ├── pose_detection.py    # Webcam pose detection and recording
-│   └── scba_tracking.py     # Approximate SCBA anchor from world landmarks
+│   ├── pose_detection.py          # Webcam pose detection and recording
+│   ├── rtmpose_tracker.py         # RTMPose Python reference
+│   └── scba_tracking.py           # SCBA anchor from landmarks
+├── emosh_service/                 # Engine D: EMOSH-Tracker Service
+│   ├── .venv/                     # Isolated virtual environment
+│   ├── server.py                  # REST API microservice
+│   ├── run_tracking.py            # Official EMOSH CLI runner
+│   ├── emosh_adapter.py           # Three.js JSON & GLB mesh converter
+│   ├── gpu_telemetry.py           # GPU & VRAM monitor
+│   ├── model_validator.py         # SMPL-X / FLAME / MANO license validator
+│   ├── requirements.txt
+│   ├── README.md
+│   ├── assets/                    # Parametric model storage (SMPL-X, FLAME, MANO)
+│   ├── inputs/                    # Staged video clips
+│   └── outputs/                   # Tracking outputs (optim_tracking.npy, mesh_sequence.json)
 ├── frontend/
 │   ├── public/
 │   │   └── models/
-│   │       ├── face_landmarker.task # MediaPipe face model
-│   │       └── scba_mask.fbx        # 3D mask asset
-│   ├── index.html            # Browser UI
-│   ├── main.js               # App integration and UI
-│   ├── avatar.js             # GLB loading, rig validation, and avatar rendering
-│   ├── retargeting.js        # Bone mapping and motion retargeting
-│   ├── poseTracker.js        # MediaPipe Pose Landmarker
-│   ├── camera.js             # Camera stream and screen-space projection
-│   ├── style.css
-│   ├── package.json
-│   ├── package-lock.json
-│   └── vite.config.js
+│   │       ├── avatar.glb
+│   │       ├── emosh_sample.json  # Pre-computed EMOSH 3D human body mesh
+│   │       ├── face_landmarker.task
+│   │       └── scba_mask.fbx
+│   ├── src/
+│   │   ├── tracking/
+│   │   │   ├── emoshClient.js     # EMOSH service client
+│   │   │   └── trackingManager.js # Unified 4-engine tracking manager
+│   │   ├── visualization/
+│   │   │   └── bodyMeshViewer.js  # Reconstructed 3D human mesh & PPE player
+│   │   ├── bodyPartSegmentation.js # Engine C: BodyPix 24-part segmentation
+│   │   └── rtmw3dTracker.js       # Engine B: RTMW3D SimCC-3D
+│   ├── index.html                 # Kiosk UI with Unified Diagnostics Dashboard
+│   ├── main.js                    # Application coordinator
+│   ├── avatar.js                  # 3D avatar & PPE attachment assembly
+│   ├── retargeting.js             # Motion retargeting & 360° turn orientation
+│   ├── poseTracker.js             # Engine A: MediaPipe 3D Pose
+│   ├── scbaApparatus.js           # 3D SCBA equipment models
+│   ├── test_emosh.mjs             # EMOSH & TrackingManager test suite
+│   ├── test_body_part_segmentation.mjs
+│   ├── test_retargeting.mjs
+│   └── package.json
 ├── .gitignore
 ├── requirements.txt
 └── README.md

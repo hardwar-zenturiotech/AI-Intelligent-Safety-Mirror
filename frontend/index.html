@@ -83,13 +83,29 @@
             </div>
 
             <label class="mode-control" for="trackingEngine">
-              <span>Pose tracking engine</span>
+              <span>Pose tracking &amp; reconstruction engine</span>
               <select id="trackingEngine">
-                <option value="mediapipe" selected>MediaPipe 3D Pose (Smooth &amp; Stable - Recommended)</option>
-                <option value="bodypix">TensorFlow BodyPix (Segmentation &amp; 2D Pose - High GPU)</option>
-                <option value="rtmw3d">RTMW3D (3D)</option>
-                <option value="rtmpose3d">RTMPose 3D (OpenMMLab SimCC-3D)</option>
-                <option value="rtmpose">RTMPose 2D (OpenMMLab 2D)</option>
+                <option value="mediapipe" selected>Engine A: MediaPipe 3D Pose (Fast Live - Recommended)</option>
+                <option value="rtmw3d">Engine B: RTMW3D (SimCC-3D Joints)</option>
+                <option value="bodypix">Engine C: TensorFlow BodyPix (24-Part Segmentation)</option>
+                <option value="emosh">Engine D: EMOSH-Tracker (Full 3D Body Mesh Reconstruction)</option>
+                <option value="mediapipe+bodypix">MediaPipe + BodyPix (Pose + 24-Part Segmentation)</option>
+                <option value="rtmw3d+bodypix">RTMW3D + BodyPix (3D Joints + Segmentation)</option>
+                <option value="combined">Combined Multi-Engine Mode</option>
+                <option value="rtmpose3d">RTMPose 3D (SimCC-3D)</option>
+                <option value="rtmpose">RTMPose 2D</option>
+              </select>
+            </label>
+
+            <label class="mode-control" for="visualModeSelect">
+              <span>Visual debugging mode</span>
+              <select id="visualModeSelect">
+                <option value="6" selected>Mode 6: Combined View (Multi-layer)</option>
+                <option value="1">Mode 1: Camera Only</option>
+                <option value="2">Mode 2: MediaPipe Skeleton</option>
+                <option value="3">Mode 3: RTMW3D 3D Skeleton</option>
+                <option value="4">Mode 4: BodyPix 24-Part Segmentation</option>
+                <option value="5">Mode 5: EMOSH 3D Body Mesh Reconstruction</option>
               </select>
             </label>
 
@@ -101,6 +117,31 @@
                 <option value="environment">3D environment</option>
               </select>
             </label>
+
+            <!-- EMOSH-Tracker Reconstruction & 3D Playback Bar -->
+            <div class="emosh-control-bar" id="emoshControlBar">
+              <div class="scale-control-header">
+                <div class="scale-control-title">
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="7" r="4"></circle>
+                    <path d="M5.5 21v-2a6.5 6.5 0 0 1 13 0v2"></path>
+                  </svg>
+                  <strong>EMOSH 3D Reconstruction (Engine D)</strong>
+                  <span class="scale-indicator" id="emoshStatusBadge">READY</span>
+                </div>
+                <div class="scale-quick-presets">
+                  <button type="button" class="preset-btn" id="btnEmoshSample" title="Load pre-computed 3D human body reconstruction">Load 3D Sample Mesh</button>
+                  <button type="button" class="preset-btn" id="btnEmoshReconstruct" title="Run EMOSH pipeline on last recorded session clip">Reconstruct Last Clip</button>
+                  <button type="button" class="preset-btn" id="btnEmoshWireframe">Wireframe</button>
+                </div>
+              </div>
+              <div class="emosh-playback-row" id="emoshPlaybackRow">
+                <button type="button" class="step-btn" id="btnEmoshPlay" title="Play / Pause EMOSH 3D motion playback">▶</button>
+                <input id="emoshTimeline" type="range" min="0" max="100" value="0" step="1" title="Scrub reconstruction frame" />
+                <span class="emosh-frame-counter" id="emoshFrameCounter">Frame: 0 / 0</span>
+              </div>
+              <p class="emosh-telemetry" id="emoshTelemetryText">EMOSH GPU: Standby · 3D Body Surface Topology (SMPL-X compatible)</p>
+            </div>
 
             <!-- Prominent Live 3D Model Manual Scale Control -->
             <div class="scale-control-bar" id="scaleControlBar">
@@ -202,6 +243,26 @@
                 <span id="bodyPartDims">Dims: --</span>
                 <span id="bodyPartPeople">People: --</span>
               </div>
+
+              <!-- Unified 4-Engine Diagnostics Dashboard (Section 6) -->
+              <div class="unified-dashboard-card" id="unifiedDashboard">
+                <h4>Unified Tracking Diagnostics Dashboard</h4>
+                <div class="diagnostics-grid">
+                  <div class="diag-cell"><span>Active Engine:</span><strong id="diagActiveEngine">MediaPipe</strong></div>
+                  <div class="diag-cell"><span>MediaPipe FPS:</span><strong id="diagMediaPipeFps">-- FPS</strong></div>
+                  <div class="diag-cell"><span>RTMW3D FPS:</span><strong id="diagRtmwFps">-- FPS</strong></div>
+                  <div class="diag-cell"><span>BodyPix FPS:</span><strong id="diagBodyPixFps">-- FPS</strong></div>
+                  <div class="diag-cell"><span>EMOSH Status:</span><strong id="diagEmoshStatus">Ready</strong></div>
+                  <div class="diag-cell"><span>EMOSH Proc. Time:</span><strong id="diagEmoshTime">0.3s</strong></div>
+                  <div class="diag-cell"><span>GPU Hardware:</span><strong id="diagGpuDevice">NVIDIA RTX 3050</strong></div>
+                  <div class="diag-cell"><span>VRAM Memory:</span><strong id="diagVramMemory">3517 / 4096 MB</strong></div>
+                  <div class="diag-cell"><span>Person Detected:</span><strong id="diagPersonDetected">--</strong></div>
+                  <div class="diag-cell"><span>Pose Confidence:</span><strong id="diagConfidence">--</strong></div>
+                  <div class="diag-cell"><span>Segmentation:</span><strong id="diagSegStatus">Active</strong></div>
+                  <div class="diag-cell"><span>View Orientation:</span><strong id="diagOrientation">FRONT</strong></div>
+                </div>
+              </div>
+
               <p id="poseStatus" class="tracking-status" data-state="idle" role="status" aria-live="polite">
                 Pose tracking will start with the camera.
               </p>

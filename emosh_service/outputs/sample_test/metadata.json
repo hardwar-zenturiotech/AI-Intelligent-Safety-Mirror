@@ -1,0 +1,59 @@
+{
+  "version": "1.0",
+  "engine": "EMOSH-Tracker",
+  "input_file": "recordings\\safety_mirror_20261118-144048.mp4",
+  "total_frames": 365,
+  "fps": 30.0,
+  "resolution": [
+    1280,
+    720
+  ],
+  "status": "completed",
+  "head_only": false,
+  "visualize": true,
+  "processing_time_sec": 0.3,
+  "device": "NVIDIA GeForce RTX 3050 4GB Laptop GPU",
+  "cuda_available": true,
+  "vram_total_mb": 4096,
+  "vram_free_mb": 3517,
+  "models_status": {
+    "smplx": {
+      "name": "SMPL-X (Expressive Human Model)",
+      "is_present": false,
+      "present_files": [],
+      "required_any_of": [
+        "SMPLX_NEUTRAL.npz",
+        "SMPLX_NEUTRAL.pkl",
+        "SMPLX_MALE.npz",
+        "SMPLX_FEMALE.npz"
+      ],
+      "license_url": "https://smpl-x.is.tue.mpg.de/",
+      "license": "Custom non-commercial research license (registration required)",
+      "target_dir": "C:\\Users\\nihal\\Desktop\\Zenturiotech\\AI-Intelligent-Safety-Mirror\\AI-Intelligent-Safety-Mirror\\emosh_service\\assets\\smplx"
+    },
+    "flame": {
+      "name": "FLAME (3D Facial Model)",
+      "is_present": false,
+      "present_files": [],
+      "required_any_of": [
+        "generic_model.pkl",
+        "flame2020.pkl"
+      ],
+      "license_url": "https://flame.is.tue.mpg.de/",
+      "license": "Custom non-commercial research license (registration required)",
+      "target_dir": "C:\\Users\\nihal\\Desktop\\Zenturiotech\\AI-Intelligent-Safety-Mirror\\AI-Intelligent-Safety-Mirror\\emosh_service\\assets\\flame"
+    },
+    "mano": {
+      "name": "MANO (Articulated Hand Model)",
+      "is_present": false,
+      "present_files": [],
+      "required_any_of": [
+        "MANO_LEFT.pkl",
+        "MANO_RIGHT.pkl"
+      ],
+      "license_url": "https://mano.is.tue.mpg.de/",
+      "license": "Custom non-commercial research license (registration required)",
+      "target_dir": "C:\\Users\\nihal\\Desktop\\Zenturiotech\\AI-Intelligent-Safety-Mirror\\AI-Intelligent-Safety-Mirror\\emosh_service\\assets\\mano"
+    }
+  }
+}

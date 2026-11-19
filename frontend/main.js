@@ -958,9 +958,11 @@ function updateSyntheticPoseFrame(timestamp) {
   syntheticFrameId = requestAnimationFrame(updateSyntheticPoseFrame);
 }
 
+let selectedTrackingEngine = trackingEngine ? trackingEngine.value : "mediapipe";
+
 function loadPoseTracker() {
   if (!poseTrackerPromise) {
-    const preferredEngine = trackingEngine ? trackingEngine.value : "mediapipe";
+    const preferredEngine = selectedTrackingEngine || (trackingEngine ? trackingEngine.value : "mediapipe");
     poseTrackerPromise = UnifiedPoseTracker.create({
       preferredEngine,
       onStatus: (status) => {
@@ -974,20 +976,43 @@ function loadPoseTracker() {
   return poseTrackerPromise;
 }
 
-trackingEngine?.addEventListener("change", (event) => {
+trackingEngine?.addEventListener("change", async (event) => {
   const engine = event.target.value;
-  if (poseTracker) {
+  selectedTrackingEngine = engine;
+
+  if (!poseTracker) {
+    // Pose tracker has not yet started (e.g. camera is stopped)
+    setPoseStatus(`Engine set to ${engine.toUpperCase()}. Will start when camera begins.`, "idle");
+    return;
+  }
+
+  // Live switching while camera is active
+  const previousEngine = poseTracker.activeEngine;
+  trackingEngine.disabled = true;
+  setPoseStatus(`Switching tracking engine to ${engine}...`, "loading");
+
+  try {
     if (engine !== "rtmw3d" && poseTracker.rtmw3dTracker) {
       poseTracker.rtmw3dTracker.setDiagnosticVisibility(false);
     }
-    poseTracker.setEngine(engine).then(() => {
-      if (engine === "rtmw3d" && poseTracker.rtmw3dTracker && avatar?.scene) {
-        poseTracker.rtmw3dTracker.attachToScene(avatar.scene);
-        if (show3dDiagnosticSkeleton) {
-          poseTracker.rtmw3dTracker.setDiagnosticVisibility(show3dDiagnosticSkeleton.checked);
-        }
+    // Clear 2D overlay to avoid frozen frames between engines
+    drawPoseDebug([]);
+
+    await poseTracker.setEngine(engine);
+
+    if (engine === "rtmw3d" && poseTracker.rtmw3dTracker && avatar?.scene) {
+      poseTracker.rtmw3dTracker.attachToScene(avatar.scene);
+      if (show3dDiagnosticSkeleton) {
+        poseTracker.rtmw3dTracker.setDiagnosticVisibility(show3dDiagnosticSkeleton.checked);
       }
-    });
+    }
+  } catch (err) {
+    console.error("Failed to switch tracking engine:", err);
+    setPoseStatus(`Engine switch failed: ${err.message}. Retained ${previousEngine}.`, "error");
+    trackingEngine.value = previousEngine;
+    selectedTrackingEngine = previousEngine;
+  } finally {
+    trackingEngine.disabled = false;
   }
 });
 
@@ -1086,17 +1111,17 @@ avatarSizeInput?.addEventListener("input", (e) => {
 });
 
 stepScaleDown?.addEventListener("click", () => {
-  const current = Number(mainScaleSlider?.value || 100);
+  const current = Number(mainScaleSlider?.value || 150);
   setAvatarScalePercent(current - 5);
 });
 
 stepScaleUp?.addEventListener("click", () => {
-  const current = Number(mainScaleSlider?.value || 100);
+  const current = Number(mainScaleSlider?.value || 150);
   setAvatarScalePercent(current + 5);
 });
 
 quickResetScale?.addEventListener("click", () => {
-  setAvatarScalePercent(100);
+  setAvatarScalePercent(150);
 });
 
 presetButtons.forEach((btn) => {
@@ -1122,22 +1147,43 @@ function updateAvatarSliders() {
 avatarDepthInput?.addEventListener("input", updateAvatarSliders);
 
 resetAvatarSliders?.addEventListener("click", () => {
-  if (avatarSizeInput) avatarSizeInput.value = "100";
+  if (avatarSizeInput) avatarSizeInput.value = "150";
   if (avatarDepthInput) avatarDepthInput.value = "0";
-  setAvatarScalePercent(100);
+  setAvatarScalePercent(150);
   avatar.resetCalibration();
 });
 
 resetAvatarCalibration.addEventListener("click", () => {
-  if (avatarSizeInput) avatarSizeInput.value = "100";
+  if (avatarSizeInput) avatarSizeInput.value = "150";
   if (avatarDepthInput) avatarDepthInput.value = "0";
-  setAvatarScalePercent(100);
+  setAvatarScalePercent(150);
   avatar.resetCalibration();
   setPoseStatus("Avatar pose reset; position will be reacquired from tracking.", "ready");
 });
 
 updateCalibration();
 updateAvatarSliders();
+setAvatarScalePercent(150);
+
+// 3D PPE items map for both Avatar AR and Model Viewer preview
+const viewerPPEItems = {
+  helmet: null,
+  vest: null,
+  gloves: [],
+  respirator: [],
+};
+
+function setViewerPPEItemVisible(type, isVis) {
+  const item = viewerPPEItems[type];
+  if (!item) return;
+  if (Array.isArray(item)) {
+    item.forEach((i) => {
+      if (i) i.visible = isVis;
+    });
+  } else {
+    item.visible = isVis;
+  }
+}
 
 // Initialize all 3D PPE items based on checklist state
 equipmentItems.forEach((item) => {
@@ -1145,6 +1191,7 @@ equipmentItems.forEach((item) => {
   if (eqType) {
     const isPressed = item.getAttribute("aria-pressed") === "true";
     avatar.setPPEItemVisible(eqType, isPressed);
+    setViewerPPEItemVisible(eqType, isPressed);
   }
 
   item.addEventListener("click", () => {
@@ -1160,6 +1207,7 @@ equipmentItems.forEach((item) => {
     const equipmentType = item.dataset.equipment;
     if (equipmentType) {
       avatar.setPPEItemVisible(equipmentType, nextState);
+      setViewerPPEItemVisible(equipmentType, nextState);
     }
 
     const label = item.querySelector("strong")?.textContent || equipmentType;
@@ -1672,6 +1720,20 @@ function initModelViewer() {
       viewerGloveR.position.set(0.9, -0.68, 0);
       viewerGloveR.rotation.y = -Math.PI * 0.25;
       viewerModel.add(viewerGloveR);
+
+      viewerPPEItems.helmet = viewerHelmet;
+      viewerPPEItems.vest = viewerVest;
+      viewerPPEItems.gloves = [viewerGloveL, viewerGloveR];
+      viewerPPEItems.respirator = [viewerMask, viewerCylinder];
+
+      // Synchronize with current checklist selection state
+      equipmentItems.forEach((item) => {
+        const eqType = item.dataset.equipment;
+        if (eqType) {
+          const isPressed = item.getAttribute("aria-pressed") === "true";
+          setViewerPPEItemVisible(eqType, isPressed);
+        }
+      });
 
       scene.add(viewerModel);
 

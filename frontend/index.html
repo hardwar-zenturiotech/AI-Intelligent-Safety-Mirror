@@ -108,20 +108,21 @@
                     <path d="M4 10h12M10 4v12"></path>
                   </svg>
                   <strong>3D Model Scale</strong>
-                  <span class="scale-indicator" id="liveScaleBadge">100%</span>
+                  <span class="scale-indicator" id="liveScaleBadge">150%</span>
                 </div>
                 <div class="scale-quick-presets">
                   <button type="button" class="preset-btn" data-scale="75">75%</button>
-                  <button type="button" class="preset-btn active" data-scale="100">100%</button>
-                  <button type="button" class="preset-btn" data-scale="120">120%</button>
-                  <button type="button" class="preset-btn" data-scale="140">140%</button>
-                  <button type="button" class="preset-btn" data-scale="160">160%</button>
-                  <button type="button" class="preset-btn reset-scale-btn" id="quickResetScale">Reset</button>
+                  <button type="button" class="preset-btn" data-scale="100">100%</button>
+                  <button type="button" class="preset-btn" data-scale="125">125%</button>
+                  <button type="button" class="preset-btn active" data-scale="150">150%</button>
+                  <button type="button" class="preset-btn" data-scale="175">175%</button>
+                  <button type="button" class="preset-btn" data-scale="200">200%</button>
+                  <button type="button" class="preset-btn reset-scale-btn" id="quickResetScale">Reset (150%)</button>
                 </div>
               </div>
               <div class="scale-slider-row">
                 <button type="button" class="step-btn" id="stepScaleDown" title="Decrease scale by 5%">−</button>
-                <input id="mainScaleSlider" type="range" min="40" max="250" value="100" step="1" />
+                <input id="mainScaleSlider" type="range" min="40" max="250" value="150" step="1" />
                 <button type="button" class="step-btn" id="stepScaleUp" title="Increase scale by 5%">+</button>
               </div>
             </div>
@@ -190,9 +191,9 @@
                 <label class="calibration-slider" for="avatarSize">
                   <span class="calibration-label">
                     <span>Size scale</span>
-                    <output id="avatarSizeValue" for="avatarSize">100%</output>
+                    <output id="avatarSizeValue" for="avatarSize">150%</output>
                   </span>
-                  <input id="avatarSize" type="range" min="30" max="250" value="100" />
+                  <input id="avatarSize" type="range" min="30" max="250" value="150" />
                 </label>
                 <label class="calibration-slider" for="avatarDepth">
                   <span class="calibration-label">

@@ -169,7 +169,7 @@ export class Avatar {
     this.calibratedPixelsPerMeter = null;
     this.calibratedTorsoMeters = 0.50;
     this.calibratedShoulderMeters = 0.40;
-    this.userScaleMultiplier = 1.0;
+    this.userScaleMultiplier = 1.50;
     this.userDepthOffset = 0;
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
@@ -393,6 +393,11 @@ export class Avatar {
         rightHandBone.add(this.ppeGloveR);
       }
 
+      // Re-apply any PPE item visibility states set before or during load
+      for (const [eqType, isVisible] of Object.entries(this.ppeVisibility)) {
+        this.setPPEItemVisible(eqType, isVisible);
+      }
+
       this.setAvatarBodyMode(this.avatarBodyMode);
       this.report = report;
       this.onStatus({ state: "ready", ...report });
@@ -427,13 +432,17 @@ export class Avatar {
           } else if (mode === "hidden") {
             obj.visible = false;
           }
+          mat.needsUpdate = true;
         }
       }
     });
+    this.renderer?.render(this.scene, this.camera);
   }
 
   setRenderMode(mode) {
     this.renderMode = mode;
+    if (!this.renderer || !this.scene || !this.camera) return;
+
     if (mode === "environment") {
       this.scene.background = new THREE.Color("#141b1c");
       this.renderer.setClearColor(0x141b1c, 1);
@@ -443,6 +452,7 @@ export class Avatar {
       this.camera.position.z = 3.2;
       this.camera.near = 0.01;
       this.camera.far = 100;
+      this.camera.fov = 45;
       this.setAvatarBodyMode("visible");
     } else if (mode === "camera-avatar") {
       this.scene.background = null;
@@ -468,6 +478,7 @@ export class Avatar {
     }
     this.camera.updateProjectionMatrix();
     this.resize();
+    this.renderer?.render(this.scene, this.camera);
   }
 
   setDebug({ avatarSkeleton = false, jointPositions = false } = {}) {
@@ -480,17 +491,36 @@ export class Avatar {
   setPPEItemVisible(type, visible) {
     const isVis = Boolean(visible);
     this.ppeVisibility[type] = isVis;
+
+    const applyVisibility = (group) => {
+      if (!group) return;
+      group.visible = isVis;
+      group.traverse((child) => {
+        child.visible = isVis;
+        if (child.material) {
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
+          for (const m of mats) {
+            if (m) m.needsUpdate = true;
+          }
+        }
+      });
+    };
+
     if (type === "helmet" && this.ppeHelmet) {
-      this.ppeHelmet.visible = isVis;
+      applyVisibility(this.ppeHelmet);
     } else if (type === "vest" && this.ppeVest) {
-      this.ppeVest.visible = isVis;
+      applyVisibility(this.ppeVest);
     } else if (type === "gloves") {
-      if (this.ppeGloveL) this.ppeGloveL.visible = isVis;
-      if (this.ppeGloveR) this.ppeGloveR.visible = isVis;
+      applyVisibility(this.ppeGloveL);
+      applyVisibility(this.ppeGloveR);
     } else if (type === "respirator") {
       this.scbaVisible = isVis;
-      if (this.scbaCylinder) this.scbaCylinder.visible = isVis;
-      if (this.scbaMask) this.scbaMask.visible = isVis;
+      applyVisibility(this.scbaCylinder);
+      applyVisibility(this.scbaMask);
+    }
+
+    if (this.renderer && this.scene && this.camera) {
+      this.renderer.render(this.scene, this.camera);
     }
   }
 
@@ -615,7 +645,7 @@ export class Avatar {
   resetCalibration() {
     this.calibratedPixelsPerMeter = null;
     this.lastDetectedDepth = 0;
-    this.userScaleMultiplier = 1.0;
+    this.userScaleMultiplier = 1.50;
     this.userDepthOffset = 0;
     this.originFilter?.reset();
     this.scaleFilter?.reset();

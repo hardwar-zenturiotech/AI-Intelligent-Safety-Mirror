@@ -165,6 +165,86 @@ testing with a real person and camera. Browser automation cannot validate body
 poses, occlusion handling, or camera-specific tracking quality; report those as
 untested unless physically exercised on the target device.
 
+### Multi-Engine Tracking Architecture
+
+The mirror integrates three independent tracking and vision engines running concurrently:
+
+1. **MediaPipe 3D Pose Landmarker**:
+   - 33 landmarks with root-relative metric 3D depth.
+   - Smooth 1-Euro filtering and real-time retargeting for the rigged 3D avatar and SCBA PPE equipment.
+2. **RTMW3D (Whole-Body 3D Pose)**:
+   - 133-keypoint 3D pose detection powered by OpenMMLab RTMW3D-X and ONNX Runtime Web.
+   - Real-time 3D diagnostic skeleton and 2D keypoint projections.
+3. **TensorFlow.js BodyPix (24 Body-Part Semantic Segmentation)**:
+   - Pixel-level body-part classification powered by `@tensorflow-models/body-segmentation` on the WebGL backend.
+   - 24 anatomical part labels grouped into head, torso, left/right arms, left/right legs, and feet.
+   - Live multi-mode canvas overlay aligned with the webcam feed.
+   - Independent throttled inference (12–15 FPS) to preserve high-framerate Three.js rendering (30–60 FPS).
+
+---
+
+### BodyPix Body-Part Segmentation Setup & Usage
+
+#### Installation & Dependencies
+
+Inside `frontend/`:
+
+```powershell
+npm install @tensorflow-models/body-segmentation @tensorflow/tfjs-core @tensorflow/tfjs-converter @tensorflow/tfjs-backend-webgl
+```
+
+#### Architecture & Configuration
+
+- **Module**: `frontend/src/bodyPartSegmentation.js`
+- **Model**: `bodySegmentation.SupportedModels.BodyPix`
+- **Architecture**: `MobileNetV1`
+- **Output Stride**: `16`
+- **Multiplier**: `0.75`
+- **Quantization Bytes**: `2`
+- **Internal Resolution**: `medium`
+- **Segmentation Threshold**: `0.5`
+- **Target Inference Frequency**: `12–15 FPS` (independent non-blocking asynchronous turns)
+
+#### 24 Body-Part Label Mapping
+
+| IDs | Anatomical Labels | Grouped Limb | Default Palette |
+| :--- | :--- | :--- | :--- |
+| **0, 1** | `left_face`, `right_face` | Head & Face | Golden Warm Coral |
+| **2, 3** | `left_upper_arm_front`, `left_upper_arm_back` | Left Upper Arm | Vivid Magenta |
+| **6, 7** | `left_lower_arm_front`, `left_lower_arm_back` | Left Lower Arm | Salmon / Peach |
+| **10** | `left_hand` | Left Hand | Bright Rose Red |
+| **4, 5** | `right_upper_arm_front`, `right_upper_arm_back` | Right Upper Arm | Deep Blue |
+| **8, 9** | `right_lower_arm_front`, `right_lower_arm_back` | Right Lower Arm | Sky Blue |
+| **11** | `right_hand` | Right Hand | Electric Cyan |
+| **12, 13** | `torso_front`, `torso_back` | Torso | Safety Emerald Neon |
+| **14, 15** | `left_upper_leg_front`, `left_upper_leg_back` | Left Upper Leg | Chartreuse Lime |
+| **18, 19** | `left_lower_leg_front`, `left_lower_leg_back` | Left Lower Leg | Yellow Green |
+| **16, 17** | `right_upper_leg_front`, `right_upper_leg_back` | Right Upper Leg | Leaf Green |
+| **20, 21** | `right_lower_leg_front`, `right_lower_leg_back` | Right Lower Leg | Spring Green |
+| **22, 23** | `left_foot`, `right_foot` | Feet | Royal Violet |
+
+#### How to Activate & Test Segmentation Debug Modes
+
+1. In the browser UI, open **Motion capture diagnostics**.
+2. Ensure **BodyPix 24 body-part segmentation** is checked.
+3. Select the desired **Visual mode**:
+   - **Coloured overlay**: Semi-transparent (alpha ~0.65) rainbow overlay over the mirrored webcam.
+   - **Mask only**: Opaque segmentation view over a dark background.
+   - **Specific limb**: Isolates a single limb group using the **Limb** dropdown (e.g. `Left Arm`, `Torso`, `Head & Face`).
+   - **Off**: Disables the visual overlay while keeping the engine available for other tracking modules.
+4. Review live diagnostics:
+   - `BodyPix Parts: XX FPS (XXms)`
+   - `Dims: WxH`
+   - `People: X`
+
+#### Known Limitations
+
+- **2D Semantic Segmentation Only**: BodyPix provides 2D pixel classifications. Front/back labels are statistical 2D classification outputs and must not be treated as true physical 3D metric depth coordinates.
+- **Occlusion Dynamics**: When arms cross in front of the torso, 2D segmentation will group boundaries; MediaPipe or RTMW3D 3D joint depths remain the source of truth for avatar bone rotations.
+- **GPU Resource Management**: Running simultaneous WebGL/WASM models (MediaPipe, RTMW3D, BodyPix, Three.js) shares GPU resources; BodyPix is throttled to 12–15 FPS to prevent WebGL context exhaustion or frame drops.
+
+---
+
 ## Project structure
 
 ```text

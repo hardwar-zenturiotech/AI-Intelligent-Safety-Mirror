@@ -281,7 +281,9 @@ h2 {
 
 .camera-stage.is-environment video,
 .camera-stage.is-environment .mask-overlay,
-.camera-stage.is-environment .camera-placeholder {
+.camera-stage.is-environment .camera-placeholder,
+.camera-stage.is-environment .bodypart-segmentation-canvas,
+.camera-stage.is-environment .bodypix-edge-canvas {
   visibility: hidden;
   display: none;
 }
@@ -327,7 +329,8 @@ h2 {
   pointer-events: none;
 }
 
-.bodypix-edge-canvas {
+.bodypix-edge-canvas,
+.bodypart-segmentation-canvas {
   position: absolute;
   z-index: 2;
   inset: 0;
@@ -335,6 +338,22 @@ h2 {
   height: 100%;
   pointer-events: none;
   transform: scaleX(-1);
+}
+
+.debug-options .inline-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #cbd3d3;
+}
+
+.debug-options .inline-select select {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #202828;
+  color: #e8eded;
+  font-size: 10px;
 }
 
 .mode-control {

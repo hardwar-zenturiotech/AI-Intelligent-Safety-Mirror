@@ -19,6 +19,7 @@ import {
 } from "./rtmposeTracker.js";
 import { RTMW3DTracker } from "./src/rtmw3dTracker.js";
 import { BodyPixSegmenter } from "./bodyPixSegmenter.js";
+import { BodyPartSegmentationEngine } from "./src/bodyPartSegmentation.js";
 
 const cameraPreview = document.querySelector("#cameraPreview");
 const cameraPlaceholder = document.querySelector("#cameraPlaceholder");
@@ -73,6 +74,54 @@ const bodyPixEdgeCanvas = document.querySelector("#bodyPixEdgeCanvas");
 const enableBodyPixSegmentation = document.querySelector("#enableBodyPixSegmentation");
 const showBodyPixEdges = document.querySelector("#showBodyPixEdges");
 const bodyPixFps = document.querySelector("#bodyPixFps");
+
+// TensorFlow BodyPix 24 Body-Part Segmentation
+const bodyPartSegmentationCanvas = document.querySelector("#bodyPartSegmentationCanvas");
+const enableBodyPartSegmentation = document.querySelector("#enableBodyPartSegmentation");
+const bodyPartDebugMode = document.querySelector("#bodyPartDebugMode");
+const bodyPartFilter = document.querySelector("#bodyPartFilter");
+const bodyPartFps = document.querySelector("#bodyPartFps");
+const bodyPartDims = document.querySelector("#bodyPartDims");
+const bodyPartPeople = document.querySelector("#bodyPartPeople");
+
+const bodyPartEngine = new BodyPartSegmentationEngine({
+  architecture: "MobileNetV1",
+  outputStride: 16,
+  multiplier: 0.75,
+  quantBytes: 2,
+  targetFps: 12,
+  debugMode: bodyPartDebugMode ? bodyPartDebugMode.value : "overlay",
+  selectedPartGroup: bodyPartFilter ? bodyPartFilter.value : "all",
+  opacity: 0.65,
+});
+
+bodyPartEngine.onStatus((status) => {
+  if (bodyPartFps) {
+    bodyPartFps.textContent = status.message || `BodyPix Parts: ${status.state}`;
+  }
+});
+
+enableBodyPartSegmentation?.addEventListener("change", (e) => {
+  bodyPartEngine.enabled = e.target.checked;
+  if (!e.target.checked && bodyPartSegmentationCanvas) {
+    bodyPartSegmentationCanvas.hidden = true;
+    const ctx = bodyPartSegmentationCanvas.getContext("2d");
+    ctx?.clearRect(0, 0, bodyPartSegmentationCanvas.width, bodyPartSegmentationCanvas.height);
+  }
+});
+
+bodyPartDebugMode?.addEventListener("change", (e) => {
+  bodyPartEngine.setDebugMode(e.target.value);
+  if (e.target.value === "off" && bodyPartSegmentationCanvas) {
+    bodyPartSegmentationCanvas.hidden = true;
+    const ctx = bodyPartSegmentationCanvas.getContext("2d");
+    ctx?.clearRect(0, 0, bodyPartSegmentationCanvas.width, bodyPartSegmentationCanvas.height);
+  }
+});
+
+bodyPartFilter?.addEventListener("change", (e) => {
+  bodyPartEngine.setSelectedPartGroup(e.target.value);
+});
 
 const bodyPixSegmenter = new BodyPixSegmenter();
 bodyPixSegmenter.onStatus(({ message }) => {
@@ -177,6 +226,7 @@ async function startCamera() {
     cameraMessage.textContent = "Loading pose tracking...";
     startPoseTrackingLoop();
     void bodyPixSegmenter.init();
+    void bodyPartEngine.init();
     try {
       poseTracker = await loadPoseTracker();
       setPoseStatus("Pose tracker ready; waiting for a visible person.", "ready");
@@ -210,6 +260,14 @@ function stopCamera() {
   if (bodyPixEdgeCanvas) {
     bodyPixEdgeCanvas.hidden = true;
   }
+  if (bodyPartSegmentationCanvas) {
+    bodyPartSegmentationCanvas.hidden = true;
+    const ctx = bodyPartSegmentationCanvas.getContext("2d");
+    ctx?.clearRect(0, 0, bodyPartSegmentationCanvas.width, bodyPartSegmentationCanvas.height);
+  }
+  if (bodyPartFps) bodyPartFps.textContent = "BodyPix Parts: Ready";
+  if (bodyPartDims) bodyPartDims.textContent = "Dims: --";
+  if (bodyPartPeople) bodyPartPeople.textContent = "People: --";
   if (!syntheticPoseInput.checked) {
     poseConfidence.textContent = "Tracking: --";
     setPoseStatus("Camera stopped. Start it again for live pose tracking.", "idle");
@@ -316,6 +374,22 @@ function renderCompositeRecordingFrame() {
       recordingCtx.scale(-1, 1);
     }
     recordingCtx.drawImage(bodyPixEdgeCanvas, 0, 0, w, h);
+    recordingCtx.restore();
+  }
+
+  // Draw BodyPix 24 body-part segmentation overlay (if active)
+  if (
+    bodyPartSegmentationCanvas &&
+    !bodyPartSegmentationCanvas.hidden &&
+    bodyPartSegmentationCanvas.width > 0 &&
+    bodyPartSegmentationCanvas.height > 0
+  ) {
+    recordingCtx.save();
+    if (renderMode.value !== "environment") {
+      recordingCtx.translate(w, 0);
+      recordingCtx.scale(-1, 1);
+    }
+    recordingCtx.drawImage(bodyPartSegmentationCanvas, 0, 0, w, h);
     recordingCtx.restore();
   }
 }
@@ -863,6 +937,48 @@ function updatePoseFrame(frameTime = performance.now()) {
         .catch((e) => console.warn("BodyPix frame error:", e));
     } else if (bodyPixEdgeCanvas) {
       bodyPixEdgeCanvas.hidden = true;
+    }
+
+    // Asynchronous BodyPix 24 Body-Part Segmentation pass
+    if (enableBodyPartSegmentation?.checked && bodyPartEngine.ready) {
+      bodyPartEngine
+        .segment(cameraPreview, now)
+        .then((partResult) => {
+          if (!partResult) return;
+          if (
+            bodyPartSegmentationCanvas &&
+            bodyPartEngine.options.debugMode !== "off"
+          ) {
+            bodyPartSegmentationCanvas.hidden = false;
+            const rect = cameraStage.getBoundingClientRect();
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+            const w = Math.round(rect.width * pixelRatio);
+            const h = Math.round(rect.height * pixelRatio);
+            if (
+              bodyPartSegmentationCanvas.width !== w ||
+              bodyPartSegmentationCanvas.height !== h
+            ) {
+              bodyPartSegmentationCanvas.width = w;
+              bodyPartSegmentationCanvas.height = h;
+            }
+            bodyPartEngine.renderOverlay(bodyPartSegmentationCanvas, cameraPreview);
+          } else if (bodyPartSegmentationCanvas) {
+            bodyPartSegmentationCanvas.hidden = true;
+          }
+
+          if (bodyPartFps) {
+            bodyPartFps.textContent = `BodyPix Parts: ${bodyPartEngine.fps || "--"} FPS (${bodyPartEngine.inferenceLatencyMs}ms)`;
+          }
+          if (bodyPartDims) {
+            bodyPartDims.textContent = `Dims: ${partResult.width}×${partResult.height}`;
+          }
+          if (bodyPartPeople) {
+            bodyPartPeople.textContent = `People: ${partResult.peopleCount}`;
+          }
+        })
+        .catch((e) => console.warn("BodyPix body-part segmentation error:", e));
+    } else if (bodyPartSegmentationCanvas) {
+      bodyPartSegmentationCanvas.hidden = true;
     }
 
     updateRetargetingReadout();

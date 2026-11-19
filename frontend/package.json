@@ -6,11 +6,15 @@
   "scripts": {
     "dev": "vite --config vite.config.js",
     "build": "vite --config vite.config.js build",
-    "test": "node test_retargeting.mjs && node test_rtmpose.mjs && node test_rtmw3d.mjs && node test_avatar_scaling.mjs && node test_bodypix.mjs",
+    "test": "node test_retargeting.mjs && node test_rtmpose.mjs && node test_rtmw3d.mjs && node test_avatar_scaling.mjs && node test_bodypix.mjs && node test_body_part_segmentation.mjs",
     "preview": "vite --config vite.config.js preview"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.3",
+    "@tensorflow-models/body-segmentation": "^1.0.2",
+    "@tensorflow/tfjs-backend-webgl": "^4.22.0",
+    "@tensorflow/tfjs-converter": "^4.22.0",
+    "@tensorflow/tfjs-core": "^4.22.0",
     "rtmlib-ts": "^0.1.0",
     "three": "^0.187.0"
   },

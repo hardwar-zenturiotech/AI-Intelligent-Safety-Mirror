@@ -45,6 +45,21 @@ Place the SCBA mask FBX at:
 
 `frontend/public/models/scba_mask.fbx`
 
+## Desktop Executable Software (Windows)
+
+The application can be launched directly as a native Windows desktop software without manually opening terminals or browser tabs:
+
+1. **Launch Directly**: Double-click [`SafetyMirror.exe`](file:///c:/Users/nihal/Desktop/Zenturiotech/AI-Intelligent-Safety-Mirror/AI-Intelligent-Safety-Mirror/SafetyMirror.exe) or [`Start-Safety-Mirror.bat`](file:///c:/Users/nihal/Desktop/Zenturiotech/AI-Intelligent-Safety-Mirror/AI-Intelligent-Safety-Mirror/Start-Safety-Mirror.bat).
+2. **Install Desktop Shortcut**: Double-click [`CreateDesktopShortcut.bat`](file:///c:/Users/nihal/Desktop/Zenturiotech/AI-Intelligent-Safety-Mirror/AI-Intelligent-Safety-Mirror/CreateDesktopShortcut.bat) to place a branded shortcut on your Windows desktop.
+3. **Rebuild Executable**: Run `powershell -File build_executable.ps1` or `npm run build:exe`.
+
+### Executable Architecture & Capabilities
+- **Native GUI Launcher**: Compiled native `.exe` with embedded application icon, high-DPI scaling manifest, and no black console window popup.
+- **Embedded Web Server**: Built-in HTTP listener that serves bundled production assets, handles media streaming, and processes `/api/recordings` uploads to the `recordings/` folder.
+- **Dedicated Window Mode**: Launches in dedicated standalone window mode (`--app`) with zero browser address/tab clutter, custom 1440x900 resolution, and persistent camera permissions.
+- **Hardware GPU Acceleration**: Pre-configured flags for WebGPU, WebGL 2.0, Vulkan/Direct3D 11 ANGLE, and SIMD WebAssembly for maximum ONNX Runtime Web and TensorFlow.js inference framerates.
+- **Microservice Orchestration**: Automatically spawns and monitors the Python EMOSH reconstruction microservice on port 8000, and gracefully terminates all background processes upon closing the window.
+
 ## Run
 
 From the repository root:

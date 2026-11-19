@@ -25,6 +25,12 @@ frontend/public/models/rtmpose_extract/
 # Recordings and temporary analysis artifacts
 recordings/
 scratch/
+*.lnk
+
+# Distributable Packages
+AI-Safety-Mirror-Portable/
+dist_package/
+*.zip
 
 # OS
 .DS_Store

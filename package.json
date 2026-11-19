@@ -1,0 +1,32 @@
+{
+  "name": "ai-intelligent-safety-mirror",
+  "version": "1.0.0",
+  "description": "AI Intelligent Safety Mirror for Industrial PPE & SCBA Verification",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build && cd .. && powershell -ExecutionPolicy Bypass -File build_executable.ps1",
+    "build:frontend": "cd frontend && npm run build",
+    "build:exe": "powershell -ExecutionPolicy Bypass -File build_executable.ps1",
+    "test": "cd frontend && npm test",
+    "shortcut": "powershell -ExecutionPolicy Bypass -File Install-Desktop-Shortcut.ps1",
+    "package": "powershell -ExecutionPolicy Bypass -File package_distribution.ps1",
+    "package:zip": "powershell -ExecutionPolicy Bypass -File package_distribution.ps1 -Zip"
+  },
+  "keywords": [
+    "safety-mirror",
+    "computer-vision",
+    "mediapipe",
+    "rtmpose",
+    "rtmw3d",
+    "bodypix",
+    "emosh",
+    "threejs",
+    "scba",
+    "ppe"
+  ],
+  "author": "Zenturio",
+  "license": "UNLICENSED"
+}

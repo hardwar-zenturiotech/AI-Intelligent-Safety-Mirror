@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, readFileSync, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, readFileSync, existsSync, copyFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -194,6 +194,13 @@ export default defineConfig({
             fileName: `mediapipe/wasm/${file}`,
             source: readFileSync(resolve(visionWasmDirectory, file)),
           });
+        }
+      },
+      closeBundle() {
+        const nestedIndex = resolve(frontendDirectory, "dist", "frontend", "index.html");
+        const rootIndex = resolve(frontendDirectory, "dist", "index.html");
+        if (existsSync(nestedIndex)) {
+          copyFileSync(nestedIndex, rootIndex);
         }
       },
     },

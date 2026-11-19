@@ -118,6 +118,7 @@ export class Avatar {
         antialias: true,
         alpha: true,
         preserveDrawingBuffer: true,
+        powerPreference: "high-performance",
       });
     } catch (error) {
       this.unavailable = true;
@@ -174,9 +175,9 @@ export class Avatar {
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
     this.calibrationDebugVisible = false;
-    this.originFilter = new AdaptivePointFilter(1.2, 8.0);
-    this.scaleFilter = new AdaptiveScalarFilter(0.6, 4.0);
-    this.widthFactorFilter = new AdaptiveScalarFilter(0.6, 4.0);
+    this.originFilter = new AdaptivePointFilter(0.8, 12.0);
+    this.scaleFilter = new AdaptiveScalarFilter(0.4, 6.0);
+    this.widthFactorFilter = new AdaptiveScalarFilter(0.4, 6.0);
     this.silhouetteBounds = null;
     this.scbaVisible = false;
     this.scbaCylinder = null;

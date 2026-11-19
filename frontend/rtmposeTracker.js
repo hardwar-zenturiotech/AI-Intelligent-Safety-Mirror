@@ -8,10 +8,19 @@ import {
   createSyntheticPose,
   isLandmarkUsable,
   POSE_CONNECTIONS,
+  OneEuroPointFilter,
+  OneEuroPointFilter3D,
 } from "./poseTracker.js";
 import { RTMW3DTracker } from "./src/rtmw3dTracker.js";
 
-export { createSyntheticPose, isLandmarkUsable, POSE_CONNECTIONS, RTMW3DTracker };
+export {
+  createSyntheticPose,
+  isLandmarkUsable,
+  POSE_CONNECTIONS,
+  RTMW3DTracker,
+  OneEuroPointFilter,
+  OneEuroPointFilter3D,
+};
 
 export const COCO_KEYPOINTS = {
   NOSE: 0,
@@ -53,143 +62,6 @@ export const COCO_TO_MEDIAPIPE = [
   [15, 27], // left_ankle
   [16, 28], // right_ankle
 ];
-
-/**
- * 1-Euro Adaptive Low-Pass Filter for real-time 2D landmark coordinates.
- * Eliminates micro-jitter and shivering while standing still,
- * and decreases filtering dynamically during fast movement to prevent lag.
- */
-export class OneEuroPointFilter {
-  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
-    this.minCutoff = minCutoff;
-    this.beta = beta;
-    this.dCutoff = dCutoff;
-    this.xPrev = 0;
-    this.yPrev = 0;
-    this.dxPrev = 0;
-    this.dyPrev = 0;
-    this.hasValue = false;
-    this.tPrev = 0;
-  }
-
-  reset() {
-    this.hasValue = false;
-    this.tPrev = 0;
-  }
-
-  alpha(cutoff, dt) {
-    const tau = 1.0 / (2 * Math.PI * cutoff);
-    return 1.0 / (1.0 + tau / dt);
-  }
-
-  filter(x, y, timestampSeconds) {
-    if (!this.hasValue || this.tPrev <= 0) {
-      this.xPrev = x;
-      this.yPrev = y;
-      this.dxPrev = 0;
-      this.dyPrev = 0;
-      this.tPrev = timestampSeconds;
-      this.hasValue = true;
-      return { x, y };
-    }
-
-    const dt = Math.min(Math.max(timestampSeconds - this.tPrev, 0.001), 0.1);
-    this.tPrev = timestampSeconds;
-
-    // Filter derivative (velocity)
-    const dx = (x - this.xPrev) / dt;
-    const dy = (y - this.yPrev) / dt;
-    const aD = this.alpha(this.dCutoff, dt);
-    const dxHat = aD * dx + (1 - aD) * this.dxPrev;
-    const dyHat = aD * dy + (1 - aD) * this.dyPrev;
-    this.dxPrev = dxHat;
-    this.dyPrev = dyHat;
-
-    // Adaptive cutoff based on speed
-    const speed = Math.hypot(dxHat, dyHat);
-    const cutoff = this.minCutoff + this.beta * speed;
-    const a = this.alpha(cutoff, dt);
-
-    const xHat = a * x + (1 - a) * this.xPrev;
-    const yHat = a * y + (1 - a) * this.yPrev;
-    this.xPrev = xHat;
-    this.yPrev = yHat;
-
-    return { x: xHat, y: yHat };
-  }
-}
-
-/**
- * 1-Euro Adaptive Low-Pass Filter for real-time 3D landmark coordinates (x, y, z).
- */
-export class OneEuroPointFilter3D {
-  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
-    this.minCutoff = minCutoff;
-    this.beta = beta;
-    this.dCutoff = dCutoff;
-    this.xPrev = 0;
-    this.yPrev = 0;
-    this.zPrev = 0;
-    this.dxPrev = 0;
-    this.dyPrev = 0;
-    this.dzPrev = 0;
-    this.hasValue = false;
-    this.tPrev = 0;
-  }
-
-  reset() {
-    this.hasValue = false;
-    this.tPrev = 0;
-  }
-
-  alpha(cutoff, dt) {
-    const tau = 1.0 / (2 * Math.PI * cutoff);
-    return 1.0 / (1.0 + tau / dt);
-  }
-
-  filter(x, y, z, timestampSeconds) {
-    if (!this.hasValue || this.tPrev <= 0) {
-      this.xPrev = x;
-      this.yPrev = y;
-      this.zPrev = z;
-      this.dxPrev = 0;
-      this.dyPrev = 0;
-      this.dzPrev = 0;
-      this.tPrev = timestampSeconds;
-      this.hasValue = true;
-      return { x, y, z };
-    }
-
-    const dt = Math.min(Math.max(timestampSeconds - this.tPrev, 0.001), 0.1);
-    this.tPrev = timestampSeconds;
-
-    // Filter derivative (velocity)
-    const dx = (x - this.xPrev) / dt;
-    const dy = (y - this.yPrev) / dt;
-    const dz = (z - this.zPrev) / dt;
-    const aD = this.alpha(this.dCutoff, dt);
-    const dxHat = aD * dx + (1 - aD) * this.dxPrev;
-    const dyHat = aD * dy + (1 - aD) * this.dyPrev;
-    const dzHat = aD * dz + (1 - aD) * this.dzPrev;
-    this.dxPrev = dxHat;
-    this.dyPrev = dyHat;
-    this.dzPrev = dzHat;
-
-    // Adaptive cutoff based on 3D speed
-    const speed = Math.hypot(dxHat, dyHat, dzHat);
-    const cutoff = this.minCutoff + this.beta * speed;
-    const a = this.alpha(cutoff, dt);
-
-    const xHat = a * x + (1 - a) * this.xPrev;
-    const yHat = a * y + (1 - a) * this.yPrev;
-    const zHat = a * z + (1 - a) * this.zPrev;
-    this.xPrev = xHat;
-    this.yPrev = yHat;
-    this.zPrev = zHat;
-
-    return { x: xHat, y: yHat, z: zHat };
-  }
-}
 
 /**
  * OpenMMLab SimCC (Coordinate Classification) 1D heatmap decoder.
@@ -914,7 +786,7 @@ export class UnifiedPoseTracker {
       try {
         this.rtmw3dTracker = await RTMW3DTracker.create({
           onStatus: this.onStatus,
-          backend: "wasm",
+          backend: "webgpu",
         });
         this.activeEngine = "rtmw3d";
         this.onStatus({

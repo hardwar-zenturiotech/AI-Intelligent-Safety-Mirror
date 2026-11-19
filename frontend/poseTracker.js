@@ -15,29 +15,227 @@ export const POSE_CONNECTIONS = [
   [26, 28],
 ];
 
+/**
+ * 1-Euro Adaptive Low-Pass Filter for real-time 2D landmark coordinates.
+ * Eliminates micro-jitter and shivering while standing still,
+ * and decreases filtering dynamically during fast movement to prevent lag.
+ */
+export class OneEuroPointFilter {
+  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this.xPrev = 0;
+    this.yPrev = 0;
+    this.dxPrev = 0;
+    this.dyPrev = 0;
+    this.hasValue = false;
+    this.tPrev = 0;
+  }
+
+  reset() {
+    this.hasValue = false;
+    this.tPrev = 0;
+  }
+
+  alpha(cutoff, dt) {
+    const tau = 1.0 / (2 * Math.PI * cutoff);
+    return 1.0 / (1.0 + tau / dt);
+  }
+
+  filter(x, y, timestampSeconds) {
+    if (!this.hasValue || this.tPrev <= 0) {
+      this.xPrev = x;
+      this.yPrev = y;
+      this.dxPrev = 0;
+      this.dyPrev = 0;
+      this.tPrev = timestampSeconds;
+      this.hasValue = true;
+      return { x, y };
+    }
+
+    const dt = Math.min(Math.max(timestampSeconds - this.tPrev, 0.001), 0.1);
+    this.tPrev = timestampSeconds;
+
+    // Filter derivative (velocity)
+    const dx = (x - this.xPrev) / dt;
+    const dy = (y - this.yPrev) / dt;
+    const aD = this.alpha(this.dCutoff, dt);
+    const dxHat = aD * dx + (1 - aD) * this.dxPrev;
+    const dyHat = aD * dy + (1 - aD) * this.dyPrev;
+    this.dxPrev = dxHat;
+    this.dyPrev = dyHat;
+
+    // Adaptive cutoff based on speed
+    const speed = Math.hypot(dxHat, dyHat);
+    const cutoff = this.minCutoff + this.beta * speed;
+    const a = this.alpha(cutoff, dt);
+
+    const xHat = a * x + (1 - a) * this.xPrev;
+    const yHat = a * y + (1 - a) * this.yPrev;
+    this.xPrev = xHat;
+    this.yPrev = yHat;
+
+    return { x: xHat, y: yHat };
+  }
+}
+
+/**
+ * 1-Euro Adaptive Low-Pass Filter for real-time 3D landmark coordinates (x, y, z).
+ */
+export class OneEuroPointFilter3D {
+  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this.xPrev = 0;
+    this.yPrev = 0;
+    this.zPrev = 0;
+    this.dxPrev = 0;
+    this.dyPrev = 0;
+    this.dzPrev = 0;
+    this.hasValue = false;
+    this.tPrev = 0;
+  }
+
+  reset() {
+    this.hasValue = false;
+    this.tPrev = 0;
+  }
+
+  alpha(cutoff, dt) {
+    const tau = 1.0 / (2 * Math.PI * cutoff);
+    return 1.0 / (1.0 + tau / dt);
+  }
+
+  filter(x, y, z, timestampSeconds) {
+    if (!this.hasValue || this.tPrev <= 0) {
+      this.xPrev = x;
+      this.yPrev = y;
+      this.zPrev = z;
+      this.dxPrev = 0;
+      this.dyPrev = 0;
+      this.dzPrev = 0;
+      this.tPrev = timestampSeconds;
+      this.hasValue = true;
+      return { x, y, z };
+    }
+
+    const dt = Math.min(Math.max(timestampSeconds - this.tPrev, 0.001), 0.1);
+    this.tPrev = timestampSeconds;
+
+    // Filter derivative (velocity)
+    const dx = (x - this.xPrev) / dt;
+    const dy = (y - this.yPrev) / dt;
+    const dz = (z - this.zPrev) / dt;
+    const aD = this.alpha(this.dCutoff, dt);
+    const dxHat = aD * dx + (1 - aD) * this.dxPrev;
+    const dyHat = aD * dy + (1 - aD) * this.dyPrev;
+    const dzHat = aD * dz + (1 - aD) * this.dzPrev;
+    this.dxPrev = dxHat;
+    this.dyPrev = dyHat;
+    this.dzPrev = dzHat;
+
+    const speed = Math.hypot(dxHat, dyHat, dzHat);
+    const cutoff = this.minCutoff + this.beta * speed;
+    const a = this.alpha(cutoff, dt);
+
+    const xHat = a * x + (1 - a) * this.xPrev;
+    const yHat = a * y + (1 - a) * this.yPrev;
+    const zHat = a * z + (1 - a) * this.zPrev;
+    this.xPrev = xHat;
+    this.yPrev = yHat;
+    this.zPrev = zHat;
+
+    return { x: xHat, y: yHat, z: zHat };
+  }
+}
+
 export class PoseTracker {
   static async create() {
     const fileset = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
-    const landmarker = await PoseLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: "/models/pose_landmarker_lite.task" },
-      runningMode: "VIDEO",
-      numPoses: 1,
-      minPoseDetectionConfidence: 0.5,
-      minPosePresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    let landmarker;
+    try {
+      landmarker = await PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "/models/pose_landmarker_lite.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      console.log("[MediaPipe] GPU delegate initialized successfully (hardware accelerated)");
+    } catch (gpuErr) {
+      console.warn("[MediaPipe] GPU delegate fallback to CPU:", gpuErr);
+      landmarker = await PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "/models/pose_landmarker_lite.task",
+          delegate: "CPU",
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+    }
     return new PoseTracker(landmarker);
   }
 
   constructor(landmarker) {
     this.landmarker = landmarker;
+    this.landmarkFilters2D = Array.from(
+      { length: 33 },
+      () => new OneEuroPointFilter(1.0, 0.007),
+    );
+    this.landmarkFilters3D = Array.from(
+      { length: 33 },
+      () => new OneEuroPointFilter3D(1.0, 0.007),
+    );
   }
 
   detect(video, timestamp) {
     const result = this.landmarker.detectForVideo(video, timestamp);
+    const raw2D = result.landmarks?.[0] ?? null;
+    const raw3D = result.worldLandmarks?.[0] ?? null;
+
+    if (!raw2D || !raw3D) {
+      return { landmarks: null, worldLandmarks: null };
+    }
+
+    const tsSec = (timestamp || performance.now()) * 0.001;
+
+    // Apply adaptive 1-Euro filtering to 2D landmarks for tremor-free screen positioning
+    const smooth2D = raw2D.map((lm, idx) => {
+      const vis = lm.visibility ?? lm.presence ?? 1;
+      if (vis < 0.2) return lm;
+      const pt = this.landmarkFilters2D[idx].filter(lm.x, lm.y, tsSec);
+      return {
+        ...lm,
+        x: pt.x,
+        y: pt.y,
+      };
+    });
+
+    // Apply adaptive 1-Euro filtering to 3D world landmarks for butter-smooth bone rotations
+    const smooth3D = raw3D.map((lm, idx) => {
+      const vis = lm.visibility ?? lm.presence ?? 1;
+      if (vis < 0.2) return lm;
+      const pt = this.landmarkFilters3D[idx].filter(lm.x, lm.y, lm.z, tsSec);
+      return {
+        ...lm,
+        x: pt.x,
+        y: pt.y,
+        z: pt.z,
+      };
+    });
+
     return {
-      landmarks: result.landmarks?.[0] ?? null,
-      worldLandmarks: result.worldLandmarks?.[0] ?? null,
+      landmarks: smooth2D,
+      worldLandmarks: smooth3D,
     };
   }
 

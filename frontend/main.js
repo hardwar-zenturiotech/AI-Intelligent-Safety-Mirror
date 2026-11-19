@@ -90,7 +90,7 @@ const bodyPartEngine = new BodyPartSegmentationEngine({
   outputStride: 16,
   multiplier: 0.75,
   quantBytes: 2,
-  internalResolution: bodyPartResolution ? bodyPartResolution.value : "medium",
+  internalResolution: bodyPartResolution ? bodyPartResolution.value : "low",
   targetFps: 60,
   debugMode: bodyPartDebugMode ? bodyPartDebugMode.value : "overlay",
   selectedPartGroup: bodyPartFilter ? bodyPartFilter.value : "all",

@@ -163,7 +163,7 @@ export class BodyPartSegmentationEngine {
       outputStride: options.outputStride || 16,
       multiplier: options.multiplier || 0.75,
       quantBytes: options.quantBytes || 2,
-      internalResolution: options.internalResolution || "medium",
+      internalResolution: options.internalResolution || "low",
       segmentationThreshold: options.segmentationThreshold ?? 0.5,
       targetFps: options.targetFps || 60,
       debugMode: options.debugMode || "overlay", // "overlay" | "segmentation-only" | "parts" | "off"

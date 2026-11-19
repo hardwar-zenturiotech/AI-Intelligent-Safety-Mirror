@@ -78,6 +78,7 @@ const bodyPixFps = document.querySelector("#bodyPixFps");
 // TensorFlow BodyPix 24 Body-Part Segmentation
 const bodyPartSegmentationCanvas = document.querySelector("#bodyPartSegmentationCanvas");
 const enableBodyPartSegmentation = document.querySelector("#enableBodyPartSegmentation");
+const showBodyPixOverlay = document.querySelector("#showBodyPixOverlay");
 const bodyPartResolution = document.querySelector("#bodyPartResolution");
 const bodyPartDebugMode = document.querySelector("#bodyPartDebugMode");
 const bodyPartFilter = document.querySelector("#bodyPartFilter");
@@ -109,6 +110,14 @@ bodyPartResolution?.addEventListener("change", (e) => {
 
 enableBodyPartSegmentation?.addEventListener("change", (e) => {
   bodyPartEngine.enabled = e.target.checked;
+  if (!e.target.checked && bodyPartSegmentationCanvas) {
+    bodyPartSegmentationCanvas.hidden = true;
+    const ctx = bodyPartSegmentationCanvas.getContext("2d");
+    ctx?.clearRect(0, 0, bodyPartSegmentationCanvas.width, bodyPartSegmentationCanvas.height);
+  }
+});
+
+showBodyPixOverlay?.addEventListener("change", (e) => {
   if (!e.target.checked && bodyPartSegmentationCanvas) {
     bodyPartSegmentationCanvas.hidden = true;
     const ctx = bodyPartSegmentationCanvas.getContext("2d");
@@ -383,8 +392,10 @@ function renderCompositeRecordingFrame() {
     recordingCtx.restore();
   }
 
-  // Draw BodyPix 24 body-part segmentation overlay (if active)
+  // Draw BodyPix 24 body-part segmentation overlay (if active and enabled by user)
+  const isBodyPixOverlayActive = showBodyPixOverlay ? showBodyPixOverlay.checked : true;
   if (
+    isBodyPixOverlayActive &&
     bodyPartSegmentationCanvas &&
     !bodyPartSegmentationCanvas.hidden &&
     bodyPartSegmentationCanvas.width > 0 &&
@@ -927,9 +938,11 @@ function updatePoseFrame(frameTime = performance.now()) {
             avatar.setSegmentationBounds(partResult.bounds);
           }
 
+          const showOverlay = (showBodyPixOverlay ? showBodyPixOverlay.checked : true) && bodyPartEngine.options.debugMode !== "off";
+
           if (
             bodyPartSegmentationCanvas &&
-            (bodyPartEngine.options.debugMode !== "off" || isBodyPixEngine)
+            showOverlay
           ) {
             bodyPartSegmentationCanvas.hidden = false;
             const rect = cameraStage.getBoundingClientRect();
@@ -946,6 +959,8 @@ function updatePoseFrame(frameTime = performance.now()) {
             bodyPartEngine.renderOverlay(bodyPartSegmentationCanvas, cameraPreview);
           } else if (bodyPartSegmentationCanvas) {
             bodyPartSegmentationCanvas.hidden = true;
+            const ctx = bodyPartSegmentationCanvas.getContext("2d");
+            ctx?.clearRect(0, 0, bodyPartSegmentationCanvas.width, bodyPartSegmentationCanvas.height);
           }
 
           if (bodyPartFps) {

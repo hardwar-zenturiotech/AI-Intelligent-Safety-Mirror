@@ -418,13 +418,13 @@ export class MotionRetargeter {
     }
   }
 
-  update(landmarks, worldLandmarks, deltaSeconds) {
+  update(landmarks, worldLandmarks, deltaSeconds, bodyPixMetrics = null) {
     const delta = Math.min(Math.max(deltaSeconds ?? 0, 0), 0.1);
     const smoothing = delta > 0 ? (1 - Math.exp(-32 * delta)) : 1.0;
     let updated = false;
 
     if (landmarks && worldLandmarks) {
-      const torsoUpdated = this.updateTorso(worldLandmarks, delta, smoothing);
+      const torsoUpdated = this.updateTorso(worldLandmarks, delta, smoothing, bodyPixMetrics);
       if (!torsoUpdated) this.restoreTorso(smoothing);
       updated = torsoUpdated || updated;
 
@@ -495,7 +495,7 @@ export class MotionRetargeter {
     return updated;
   }
 
-  updateTorso(worldLandmarks, delta = 0.016, smoothing = 1.0) {
+  updateTorso(worldLandmarks, delta = 0.016, smoothing = 1.0, bodyPixMetrics = null) {
     if (
       !isLandmarkUsable(worldLandmarks[11], CONFIDENCE_THRESHOLD) ||
       !isLandmarkUsable(worldLandmarks[12], CONFIDENCE_THRESHOLD)
@@ -567,8 +567,26 @@ export class MotionRetargeter {
     }
     this.torsoForward.normalize();
 
-    // Verify torsoForward points to the front side of the human (toward the nose)
-    if (isLandmarkUsable(worldLandmarks[0], CONFIDENCE_THRESHOLD)) {
+    // Orient torso based on BodyPix semantic 24-part segmentation or anatomical nose vector
+    if (bodyPixMetrics && bodyPixMetrics.confidence >= 0.5) {
+      this.currentViewMode = bodyPixMetrics.viewMode;
+      if (bodyPixMetrics.facingBias < -0.20) {
+        // Rear view: user has turned around to show back (SCBA cylinder inspection)
+        // In camera/Three.js space, torso forward points away from camera (-Z).
+        if (this.torsoForward.z > 0.05) {
+          this.torsoForward.negate();
+          this.torsoLateral.negate();
+        }
+      } else if (bodyPixMetrics.facingBias > 0.20) {
+        // Front view: user faces the smart mirror
+        // In camera/Three.js space, torso forward points toward camera (+Z).
+        if (this.torsoForward.z < -0.05) {
+          this.torsoForward.negate();
+          this.torsoLateral.negate();
+        }
+      }
+    } else if (isLandmarkUsable(worldLandmarks[0], CONFIDENCE_THRESHOLD)) {
+      // Fallback: Verify torsoForward points to the front side of the human (toward the nose)
       convertMediaPipeWorldVector(worldLandmarks[0], this.nose);
       // Anatomical outlier check: nose cannot be below shoulder center (+Y is upward)
       if (this.nose.y > this.shoulderCenter.y - 0.15) {
@@ -619,6 +637,7 @@ export class MotionRetargeter {
     this.diagnostics.torsoYaw = this.torsoEuler.y;
     this.diagnostics.torsoPitch = this.torsoEuler.x;
     this.diagnostics.torsoRoll = this.torsoEuler.z;
+    this.diagnostics.viewMode = this.currentViewMode || (this.diagnostics.torsoForward.z < -0.2 ? "back" : "front");
   }
 
   restoreTorso(smoothing) {

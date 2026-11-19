@@ -137,8 +137,27 @@ loader.parse(arrayBuffer, "", (gltf) => {
   retargeter.update(neutral.landmarks, neutral.worldLandmarks, 1);
   assert(retargeter.tracked === true, "Tracking status is true when reacquired");
 
+  console.log("--- 12. Rear View Retargeting with BodyPix Orientation (FR-05 SCBA Cylinder Inspection) ---");
+  retargeter.reset();
+  const rearMetrics = {
+    facingBias: -0.85,
+    viewMode: "back",
+    confidence: 1.0,
+    isRearView: true,
+    isFrontView: false,
+  };
+  retargeter.update(neutral.landmarks, neutral.worldLandmarks, 1, rearMetrics);
+  assert(
+    retargeter.diagnostics.torsoForward.z < 0,
+    `Torso forward normal faces backwards in rear view (z=${retargeter.diagnostics.torsoForward.z.toFixed(3)} < 0)`,
+  );
+  assert(
+    retargeter.diagnostics.viewMode === "back",
+    "Torso diagnostics viewMode reflects rear view for SCBA cylinder inspection",
+  );
+
   if (!allPassed) {
     process.exit(1);
   }
-  console.log("ALL 11 RETARGETING REQUIREMENTS VERIFIED SUCCESSFULLY!");
+  console.log("ALL 12 RETARGETING REQUIREMENTS VERIFIED SUCCESSFULLY!");
 });

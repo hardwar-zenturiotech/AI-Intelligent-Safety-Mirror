@@ -140,7 +140,51 @@ assert(bounds !== null, "computeBounds returned valid bounding box.");
 assert(bounds.minX === 2 && bounds.maxX === 7, "Bounds minX/maxX accurately bounded detected pixels.");
 assert(bounds.minY === 2 && bounds.maxY === 7, "Bounds minY/maxY accurately bounded detected pixels.");
 
-// 9. Test UnifiedPoseTracker with BodyPix Engine Selection
+// 9. Test Body Orientation Metrics & Front vs. Rear View Detection
+// Front View Simulation (Torso Front dominant)
+const frontSynth = new Int32Array(width * height);
+frontSynth.fill(-1);
+// Populate 40 pixels of torso_front (12)
+for (let y = 4; y <= 7; y++) {
+  for (let x = 3; x <= 6; x++) {
+    frontSynth[y * width + x] = BODYPIX_PARTS.TORSO_FRONT;
+  }
+}
+// Add 4 head pixels
+frontSynth[1 * width + 4] = BODYPIX_PARTS.LEFT_FACE;
+frontSynth[1 * width + 5] = BODYPIX_PARTS.RIGHT_FACE;
+
+engine.latestRawPartData = frontSynth;
+engine.smoothedFacingBias = 1.0;
+const frontMetrics = engine.computeBodyPartMetrics();
+assert(frontMetrics !== null, "computeBodyPartMetrics returned valid metrics for front view.");
+assert(frontMetrics.torsoFrontPixels === 16, "Torso front pixel count accurately tallied (16).");
+assert(frontMetrics.torsoBackPixels === 0, "Torso back pixels zero in front view.");
+assert(frontMetrics.facingBias > 0.5, `Front facing bias detected (${frontMetrics.facingBias.toFixed(2)} > 0.5).`);
+assert(frontMetrics.viewMode === "front", "View mode classified as 'front'.");
+assert(frontMetrics.isFrontView === true, "isFrontView is true.");
+assert(frontMetrics.isRearView === false, "isRearView is false.");
+
+// Rear View Simulation (Torso Back dominant for back-mounted SCBA cylinder inspection)
+const rearSynth = new Int32Array(width * height);
+rearSynth.fill(-1);
+// Populate 40 pixels of torso_back (13)
+for (let y = 4; y <= 7; y++) {
+  for (let x = 3; x <= 6; x++) {
+    rearSynth[y * width + x] = BODYPIX_PARTS.TORSO_BACK;
+  }
+}
+engine.latestRawPartData = rearSynth;
+engine.smoothedFacingBias = -1.0;
+const rearMetrics = engine.computeBodyPartMetrics();
+assert(rearMetrics !== null, "computeBodyPartMetrics returned valid metrics for rear view.");
+assert(rearMetrics.torsoBackPixels === 16, "Torso back pixel count accurately tallied (16).");
+assert(rearMetrics.facingBias < -0.5, `Rear facing bias detected (${rearMetrics.facingBias.toFixed(2)} < -0.5).`);
+assert(rearMetrics.viewMode === "back", "View mode classified as 'back'.");
+assert(rearMetrics.isRearView === true, "isRearView is true for SCBA cylinder awareness.");
+assert(rearMetrics.isFrontView === false, "isFrontView is false.");
+
+// 10. Test UnifiedPoseTracker with BodyPix Engine Selection
 const { UnifiedPoseTracker } = await import("./rtmposeTracker.js");
 const unified = new UnifiedPoseTracker({ preferredEngine: "bodypix", bodyPartEngine: engine });
 assert(unified.preferredEngine === "bodypix", "UnifiedPoseTracker accepts 'bodypix' as preferred engine.");

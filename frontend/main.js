@@ -875,7 +875,9 @@ function updateRetargetingReadout() {
   const degrees = (radians) => Math.round(THREE.MathUtils.radToDeg(radians));
   const vector = (value) =>
     `${value.x.toFixed(2)}, ${value.y.toFixed(2)}, ${value.z.toFixed(2)}`;
+  const viewModeLabel = diagnostics.viewMode ? `[View: ${diagnostics.viewMode.toUpperCase()}] ` : "";
   retargetingReadout.textContent =
+    viewModeLabel +
     `Torso yaw/pitch/roll: ${degrees(diagnostics.torsoYaw)}° / ` +
     `${degrees(diagnostics.torsoPitch)}° / ${degrees(diagnostics.torsoRoll)}°. ` +
     `Head relative yaw/pitch/roll: ${degrees(diagnostics.headYaw)}° / ` +
@@ -920,7 +922,8 @@ function updatePoseFrame(frameTime = performance.now()) {
     const now = frameTime;
     const pose = poseTracker.detect(cameraPreview, now);
     recordPoseFrame(now, "pose");
-    avatar.update(pose.landmarks, pose.worldLandmarks, cameraPreview);
+    const bodyPixMetrics = bodyPartEngine.getBodyOrientationMetrics();
+    avatar.update(pose.landmarks, pose.worldLandmarks, cameraPreview, bodyPixMetrics);
 
     // BodyPix Segmentation & Pose processing
     const isBodyPixEngine = poseTracker.activeEngine === "bodypix";
@@ -933,9 +936,12 @@ function updatePoseFrame(frameTime = performance.now()) {
         .then((partResult) => {
           if (!partResult) return;
 
-          // Provide silhouette bounds to 3D avatar for occlusion and scale calibration
+          // Provide silhouette bounds and body metrics to 3D avatar for occlusion and scale calibration
           if (partResult.bounds) {
             avatar.setSegmentationBounds(partResult.bounds);
+          }
+          if (partResult.metrics) {
+            avatar.setBodyPixMetrics(partResult.metrics);
           }
 
           const showOverlay = (showBodyPixOverlay ? showBodyPixOverlay.checked : true) && bodyPartEngine.options.debugMode !== "off";
@@ -964,7 +970,10 @@ function updatePoseFrame(frameTime = performance.now()) {
           }
 
           if (bodyPartFps) {
-            bodyPartFps.textContent = `BodyPix Parts: ${bodyPartEngine.fps || "--"} FPS (${bodyPartEngine.inferenceLatencyMs}ms)`;
+            const viewDesc = partResult.metrics?.viewMode
+              ? ` [${partResult.metrics.viewMode.toUpperCase()}]`
+              : "";
+            bodyPartFps.textContent = `BodyPix Parts: ${bodyPartEngine.fps || "--"} FPS (${bodyPartEngine.inferenceLatencyMs}ms)${viewDesc}`;
           }
           if (bodyPartDims) {
             bodyPartDims.textContent = `Dims: ${partResult.width}×${partResult.height}`;

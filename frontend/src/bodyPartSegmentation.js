@@ -205,6 +205,10 @@ export class BodyPartSegmentationEngine {
     this._cachedLutKey = "";
     this._cachedLut32 = null;
 
+    // Body orientation and semantic part metrics
+    this.latestMetrics = null;
+    this.smoothedFacingBias = 1.0; // 1.0 = full front, -1.0 = full rear
+
     // Internal offscreen buffer for compositing masks without GC churn
     if (typeof document !== "undefined") {
       this.renderCanvas = document.createElement("canvas");
@@ -450,6 +454,8 @@ export class BodyPartSegmentationEngine {
 
         // Calculate silhouette bounding box for avatar scale validation and edge alignment
         this.latestBounds = this.computeBounds();
+        // Compute 24-part semantic orientation, front/back distribution, and limb metrics
+        this.latestMetrics = this.computeBodyPartMetrics();
 
         this.latestResult = {
           peopleCount: this.peopleCount,
@@ -457,6 +463,7 @@ export class BodyPartSegmentationEngine {
           width: this.outputWidth,
           height: this.outputHeight,
           bounds: this.latestBounds,
+          metrics: this.latestMetrics,
           pose: this.latestPoseResult,
           fps: this.fps,
           latencyMs: this.inferenceLatencyMs,
@@ -467,12 +474,14 @@ export class BodyPartSegmentationEngine {
         this.latestMaskData = null;
         this.latestRawPartData = null;
         this.latestBounds = null;
+        this.latestMetrics = null;
         this.latestResult = {
           peopleCount: 0,
           maskImageData: null,
           width: this.outputWidth,
           height: this.outputHeight,
           bounds: null,
+          metrics: null,
           pose: { landmarks: null, worldLandmarks: null },
           fps: this.fps,
           latencyMs: this.inferenceLatencyMs,
@@ -505,6 +514,188 @@ export class BodyPartSegmentationEngine {
 
   getSilhouetteBounds() {
     return this.latestBounds;
+  }
+
+  /**
+   * Returns the latest body orientation metrics (front vs rear facing bias, view mode,
+   * anatomical part counts and normalized bounds).
+   */
+  getBodyOrientationMetrics() {
+    return this.latestMetrics;
+  }
+
+  getPartMetrics() {
+    return this.latestMetrics;
+  }
+
+  /**
+   * Computes comprehensive 24-part semantic metrics in a single pass:
+   * - Front vs. Back torso distribution (facingBias: -1.0 rear to +1.0 front)
+   * - View Mode: "front" | "back" | "profile-left" | "profile-right"
+   * - Head, Torso, Hand bounding boxes and normalized centroids
+   * - Arm dominance for turning angle detection
+   */
+  computeBodyPartMetrics() {
+    const data = this.latestRawPartData;
+    if (!data || !this.outputWidth || !this.outputHeight) return null;
+    const w = this.outputWidth;
+    const h = this.outputHeight;
+    const isRgba = data.length === w * h * 4;
+    const alphaCutoff = Math.round(255 * this.options.segmentationThreshold);
+
+    const counts = new Uint32Array(24);
+    let headMinX = w, headMaxX = 0, headMinY = h, headMaxY = 0, headSumX = 0, headSumY = 0;
+    let torsoMinX = w, torsoMaxX = 0, torsoMinY = h, torsoMaxY = 0, torsoSumX = 0, torsoSumY = 0;
+    let lHandMinX = w, lHandMaxX = 0, lHandMinY = h, lHandMaxY = 0, lHandSumX = 0, lHandSumY = 0;
+    let rHandMinX = w, rHandMaxX = 0, rHandMinY = h, rHandMaxY = 0, rHandSumX = 0, rHandSumY = 0;
+    let totalPersonPixels = 0;
+
+    for (let y = 0; y < h; y++) {
+      const rowOffset = y * w;
+      for (let x = 0; x < w; x++) {
+        let part = -1;
+        if (isRgba) {
+          const j = (rowOffset + x) * 4;
+          if (data[j + 3] >= alphaCutoff) {
+            part = data[j];
+          }
+        } else {
+          part = data[rowOffset + x];
+        }
+
+        if (part >= 0 && part < 24) {
+          counts[part]++;
+          totalPersonPixels++;
+
+          // Head (0: left_face, 1: right_face)
+          if (part === 0 || part === 1) {
+            if (x < headMinX) headMinX = x;
+            if (x > headMaxX) headMaxX = x;
+            if (y < headMinY) headMinY = y;
+            if (y > headMaxY) headMaxY = y;
+            headSumX += x;
+            headSumY += y;
+          }
+          // Torso (12: torso_front, 13: torso_back)
+          else if (part === 12 || part === 13) {
+            if (x < torsoMinX) torsoMinX = x;
+            if (x > torsoMaxX) torsoMaxX = x;
+            if (y < torsoMinY) torsoMinY = y;
+            if (y > torsoMaxY) torsoMaxY = y;
+            torsoSumX += x;
+            torsoSumY += y;
+          }
+          // Left Hand (10)
+          else if (part === 10) {
+            if (x < lHandMinX) lHandMinX = x;
+            if (x > lHandMaxX) lHandMaxX = x;
+            if (y < lHandMinY) lHandMinY = y;
+            if (y > lHandMaxY) lHandMaxY = y;
+            lHandSumX += x;
+            lHandSumY += y;
+          }
+          // Right Hand (11)
+          else if (part === 11) {
+            if (x < rHandMinX) rHandMinX = x;
+            if (x > rHandMaxX) rHandMaxX = x;
+            if (y < rHandMinY) rHandMinY = y;
+            if (y > rHandMaxY) rHandMaxY = y;
+            rHandSumX += x;
+            rHandSumY += y;
+          }
+        }
+      }
+    }
+
+    if (totalPersonPixels === 0) return null;
+
+    const torsoFront = counts[12];
+    const torsoBack = counts[13];
+    const totalTorso = torsoFront + torsoBack;
+    const headPixels = counts[0] + counts[1];
+    const leftArmPixels = counts[2] + counts[3] + counts[6] + counts[7] + counts[10];
+    const rightArmPixels = counts[4] + counts[5] + counts[8] + counts[9] + counts[11];
+
+    let rawFacingBias = 1.0;
+    if (totalTorso > 10) {
+      rawFacingBias = (torsoFront - torsoBack) / totalTorso;
+    } else if (headPixels > 10) {
+      // If torso is occluded/missing but face is detected, infer from face parts
+      rawFacingBias = 1.0;
+    }
+
+    // Exponential smoothing on facing bias to avoid flutter during turns
+    this.smoothedFacingBias = this.smoothedFacingBias * 0.70 + rawFacingBias * 0.30;
+    const facingBias = this.smoothedFacingBias;
+
+    let viewMode = "front";
+    if (totalTorso > 10) {
+      if (facingBias > 0.22) {
+        viewMode = "front";
+      } else if (facingBias < -0.22) {
+        viewMode = "back";
+      } else {
+        // In side profile: determine whether turning left or right
+        viewMode = leftArmPixels > rightArmPixels ? "profile-left" : "profile-right";
+      }
+    }
+
+    const headBounds = headPixels > 0 && headMaxX >= headMinX ? {
+      minX: headMinX,
+      maxX: headMaxX,
+      minY: headMinY,
+      maxY: headMaxY,
+      width: headMaxX - headMinX,
+      height: headMaxY - headMinY,
+      normWidth: (headMaxX - headMinX) / w,
+      normHeight: (headMaxY - headMinY) / h,
+      centroid: { x: headSumX / (headPixels * w), y: headSumY / (headPixels * h) },
+    } : null;
+
+    const torsoBounds = totalTorso > 0 && torsoMaxX >= torsoMinX ? {
+      minX: torsoMinX,
+      maxX: torsoMaxX,
+      minY: torsoMinY,
+      maxY: torsoMaxY,
+      width: torsoMaxX - torsoMinX,
+      height: torsoMaxY - torsoMinY,
+      normWidth: (torsoMaxX - torsoMinX) / w,
+      normHeight: (torsoMaxY - torsoMinY) / h,
+      centroid: { x: torsoSumX / (totalTorso * w), y: torsoSumY / (totalTorso * h) },
+    } : null;
+
+    const leftHandCentroid = counts[10] > 0 ? {
+      x: lHandSumX / (counts[10] * w),
+      y: lHandSumY / (counts[10] * h),
+      pixels: counts[10],
+    } : null;
+
+    const rightHandCentroid = counts[11] > 0 ? {
+      x: rHandSumX / (counts[11] * w),
+      y: rHandSumY / (counts[11] * h),
+      pixels: counts[11],
+    } : null;
+
+    return {
+      facingBias,
+      rawFacingBias,
+      viewMode,
+      isRearView: facingBias < -0.22,
+      isFrontView: facingBias > 0.22,
+      isProfileView: Math.abs(facingBias) <= 0.22,
+      torsoFrontPixels: torsoFront,
+      torsoBackPixels: torsoBack,
+      totalTorsoPixels: totalTorso,
+      headPixels,
+      leftArmPixels,
+      rightArmPixels,
+      headBounds,
+      torsoBounds,
+      leftHandCentroid,
+      rightHandCentroid,
+      totalPersonPixels,
+      confidence: totalTorso > 35 ? 1.0 : (totalPersonPixels > 100 ? 0.7 : 0.0),
+    };
   }
 
   /**

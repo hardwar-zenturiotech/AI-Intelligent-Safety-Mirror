@@ -601,14 +601,22 @@ export class Avatar {
     return points;
   }
 
-  update(landmarks, worldLandmarks, video = this.video) {
+  update(landmarks, worldLandmarks, video = this.video, bodyPixMetrics = null) {
     if (!landmarks || !worldLandmarks) {
       this.tracked = null;
       return;
     }
-    this.tracked = { landmarks, worldLandmarks, video };
+    const metrics = bodyPixMetrics || this.bodyPixMetrics;
+    this.tracked = { landmarks, worldLandmarks, video, bodyPixMetrics: metrics };
     // Immediately calculate placement and retargeting on tracking update
     this.placeAvatar();
+  }
+
+  setBodyPixMetrics(metrics) {
+    this.bodyPixMetrics = metrics;
+    if (this.tracked) {
+      this.tracked.bodyPixMetrics = metrics;
+    }
   }
 
   setUserCalibration({ size, depth } = {}) {
@@ -661,7 +669,7 @@ export class Avatar {
       return;
     }
     const delta = Math.min(Math.max(this.frameDelta || 0.016, 0.001), 0.1);
-    const { landmarks, worldLandmarks, video } = this.tracked;
+    const { landmarks, worldLandmarks, video, bodyPixMetrics } = this.tracked;
     const stage = this.container.getBoundingClientRect();
     if (!stage.width || !stage.height) {
       return;
@@ -874,6 +882,17 @@ export class Avatar {
       const rawShoulderScale = unprojectedShoulderWidth / this.modelShoulderWidth;
       widthFactor = THREE.MathUtils.clamp(rawShoulderScale / scale, 0.90, 1.15);
     }
+    // Refine torso width fit using BodyPix semantic segmentation
+    if (bodyPixMetrics && bodyPixMetrics.confidence >= 0.5 && bodyPixMetrics.torsoBounds) {
+      const torsoPixelW = bodyPixMetrics.torsoBounds.normWidth * stage.width;
+      if (!bodyPixMetrics.isProfileView && torsoPixelW > 20 && scale > 20) {
+        const expectedPixelW = 0.38 * scale;
+        if (expectedPixelW > 20) {
+          const torsoFit = THREE.MathUtils.clamp(torsoPixelW / expectedPixelW, 0.92, 1.18);
+          widthFactor = widthFactor * 0.6 + torsoFit * 0.4;
+        }
+      }
+    }
 
     // Adaptive filtering on scale and widthFactor to eliminate size flicker & breathing
     const filteredScale = this.scaleFilter.filter(scale, delta);
@@ -956,7 +975,7 @@ export class Avatar {
     this.group.scale.lerp(this.scaleTarget, scaleAlpha);
     this.group.position.lerp(this.positionTarget, posAlpha);
 
-    this.retargeter.update(landmarks, worldLandmarks, delta);
+    this.retargeter.update(landmarks, worldLandmarks, delta, bodyPixMetrics);
   }
 
   resize() {

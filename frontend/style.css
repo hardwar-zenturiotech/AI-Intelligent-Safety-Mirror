@@ -1077,6 +1077,248 @@ h2 {
   line-height: 1.55;
 }
 
+/* Custom 3D Equipment Model Slots */
+.equipment-customizer {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(0, 240, 255, 0.18);
+}
+
+.customizer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.customizer-badge {
+  font-size: 8px;
+  font-family: monospace;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(0, 240, 255, 0.12);
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  color: #00f0ff;
+}
+
+.slot-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 14px 0;
+}
+
+.slot-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  background: #172122;
+  border: 1px solid #283738;
+  border-radius: 5px;
+  color: #bccaca;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.slot-pill:hover {
+  background: #233335;
+  border-color: #00f0ff;
+  color: #ffffff;
+}
+
+.slot-pill.active {
+  background: rgba(0, 240, 255, 0.15);
+  border-color: #00f0ff;
+  color: #00f0ff;
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+}
+
+.slot-pill-icon {
+  font-size: 12px;
+}
+
+.slot-card {
+  background: #111819;
+  border: 1px solid #202d2e;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.slot-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.slot-card-title {
+  margin: 0;
+  font-size: 13px;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.slot-card-subtitle {
+  margin: 2px 0 0 0;
+  font-size: 10px;
+  color: #839596;
+}
+
+.slot-status-pill {
+  font-size: 9px;
+  font-family: monospace;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+}
+
+.slot-status-pill.default {
+  background: rgba(245, 184, 0, 0.12);
+  border: 1px solid rgba(245, 184, 0, 0.4);
+  color: #f5b800;
+}
+
+.slot-status-pill.custom {
+  background: rgba(0, 240, 255, 0.18);
+  border: 1px solid rgba(0, 240, 255, 0.5);
+  color: #00f0ff;
+}
+
+.slot-select-row {
+  margin-bottom: 12px;
+}
+
+.slot-select-label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.slot-select-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a4b4b5;
+}
+
+.slot-model-select {
+  width: 100%;
+  background: #172122;
+  border: 1px solid #2e3e40;
+  color: #e5f0f0;
+  font-size: 12px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.slot-model-select:focus {
+  border-color: #00f0ff;
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
+}
+
+.slot-model-select optgroup {
+  background: #141b1c;
+  color: #00f0ff;
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.slot-model-select option {
+  background: #1a2425;
+  color: #e5f0f0;
+  font-size: 12px;
+  padding: 4px;
+}
+
+.slot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.slot-upload-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #00f0ff;
+  color: #0d1516;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.slot-upload-label:hover {
+  background: #4de7f2;
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+}
+
+.slot-reset-btn {
+  font-size: 11px;
+  padding: 6px 10px;
+}
+
+.slot-preview-btn {
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid rgba(0, 240, 255, 0.4);
+  color: #00f0ff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.slot-preview-btn:hover {
+  background: rgba(0, 240, 255, 0.2);
+}
+
+.slot-calibration-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.slot-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 9px;
+  color: #68797a;
+}
+
+.slot-format-badge {
+  font-family: monospace;
+}
+
+.slot-filename-readout {
+  font-family: monospace;
+  color: #00f0ff;
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .page-footer {
   display: flex;
   justify-content: space-between;

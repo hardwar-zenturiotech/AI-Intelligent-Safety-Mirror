@@ -94,6 +94,60 @@ export class BodyMeshViewer {
     this.gloveR = createProtectiveGloves("right");
     this.gloveR.scale.setScalar(1.1);
     this.ppeGroup.add(this.gloveR);
+
+    // 6. Front apparatus
+    this.front = null;
+  }
+
+  setCustomModelManager(manager) {
+    this.customModelManager = manager;
+    manager.onChange((evt) => {
+      this.refreshSlotMesh(evt.slotId);
+    });
+  }
+
+  refreshSlotMesh(slotId) {
+    if (!this.customModelManager || !this.ppeGroup) return;
+
+    const safeReplace = (oldObj, newObj) => {
+      if (oldObj && oldObj.parent) {
+        oldObj.parent.remove(oldObj);
+      }
+      if (newObj) {
+        newObj.renderOrder = 2;
+        this.ppeGroup.add(newObj);
+      }
+      return newObj;
+    };
+
+    if (slotId === "helmet") {
+      const vis = this.helmet ? this.helmet.visible : true;
+      this.helmet = safeReplace(this.helmet, this.customModelManager.instantiateSlotMesh("helmet"));
+      if (this.helmet) this.helmet.visible = vis;
+    } else if (slotId === "respirator") {
+      const vis = this.mask ? this.mask.visible : true;
+      this.mask = safeReplace(this.mask, this.customModelManager.instantiateSlotMesh("respirator"));
+      if (this.mask) this.mask.visible = vis;
+    } else if (slotId === "torso") {
+      const vis = this.vest ? this.vest.visible : true;
+      this.vest = safeReplace(this.vest, this.customModelManager.instantiateSlotMesh("torso"));
+      if (this.vest) this.vest.visible = vis;
+    } else if (slotId === "back") {
+      const vis = this.cylinder ? this.cylinder.visible : true;
+      this.cylinder = safeReplace(this.cylinder, this.customModelManager.instantiateSlotMesh("back"));
+      if (this.cylinder) this.cylinder.visible = vis;
+    } else if (slotId === "front") {
+      const vis = this.front ? this.front.visible : true;
+      this.front = safeReplace(this.front, this.customModelManager.instantiateSlotMesh("front"));
+      if (this.front) this.front.visible = vis;
+    } else if (slotId === "gloves") {
+      const visL = this.gloveL ? this.gloveL.visible : true;
+      const visR = this.gloveR ? this.gloveR.visible : true;
+      this.gloveL = safeReplace(this.gloveL, this.customModelManager.instantiateSlotMesh("gloves", { hand: "left" }));
+      this.gloveR = safeReplace(this.gloveR, this.customModelManager.instantiateSlotMesh("gloves", { hand: "right" }));
+      if (this.gloveL) this.gloveL.visible = visL;
+      if (this.gloveR) this.gloveR.visible = visR;
+    }
   }
 
   setPPEVisible(item, visible) {
@@ -102,7 +156,11 @@ export class BodyMeshViewer {
       if (this.mask) this.mask.visible = visible;
       if (this.cylinder) this.cylinder.visible = visible;
     }
-    if (item === "vest" && this.vest) this.vest.visible = visible;
+    if (item === "vest") {
+      if (this.vest) this.vest.visible = visible;
+      if (this.front) this.front.visible = visible;
+    }
+    if (item === "front" && this.front) this.front.visible = visible;
     if (item === "gloves") {
       if (this.gloveL) this.gloveL.visible = visible;
       if (this.gloveR) this.gloveR.visible = visible;
@@ -187,6 +245,18 @@ export class BodyMeshViewer {
       if (joints.chest && this.vest) {
         this.vest.position.set(joints.chest[0], joints.chest[1] + 0.04, joints.chest[2] + 0.01);
         if (typeof frame.yaw === "number") this.vest.rotation.y = frame.yaw;
+      }
+
+      // 3b. Front equipment: anchored to front of chest
+      if (joints.chest && this.front) {
+        const yaw = typeof frame.yaw === "number" ? frame.yaw : 0;
+        const frontZOffset = 0.125;
+        this.front.position.set(
+          joints.chest[0] + Math.sin(yaw) * frontZOffset,
+          joints.chest[1] + 0.04,
+          joints.chest[2] + Math.cos(yaw) * frontZOffset,
+        );
+        this.front.rotation.y = yaw;
       }
 
       // 4. SCBA cylinder: anchored to back of chest (-Z local offset rotated with body)

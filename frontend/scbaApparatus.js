@@ -12,7 +12,7 @@ import * as THREE from "three";
  *
  * Designed to attach directly to the humanoid avatar's chest/spine bone.
  */
-export function createSCBACylinderApparatus() {
+export function createSCBACylinderApparatus(options = {}) {
   const apparatus = new THREE.Group();
   apparatus.name = "SCBA_Cylinder_Apparatus";
 
@@ -23,8 +23,9 @@ export function createSCBACylinderApparatus() {
     metalness: 0.15,
   });
 
+  const tankColor = options.color !== undefined ? options.color : 0xf5b800;
   const tankYellowMat = new THREE.MeshStandardMaterial({
-    color: 0xf5b800,
+    color: tankColor,
     roughness: 0.28,
     metalness: 0.12,
   });
@@ -296,18 +297,20 @@ export function createSCBACylinderApparatus() {
  *
  * Designed to attach directly to the humanoid avatar's head bone.
  */
-export function createSCBAFaceMask() {
+export function createSCBAFaceMask(options = {}) {
   const mask = new THREE.Group();
   mask.name = "SCBA_Face_Mask";
 
+  const sealColor = options.rimColor !== undefined ? options.rimColor : 0x181a1c;
   const sealMat = new THREE.MeshStandardMaterial({
-    color: 0x181a1c,
+    color: sealColor,
     roughness: 0.65,
     metalness: 0.1,
   });
 
+  const visorColor = options.visorColor !== undefined ? options.visorColor : 0xa4dcff;
   const visorMat = new THREE.MeshStandardMaterial({
-    color: 0xa4dcff,
+    color: visorColor,
     roughness: 0.1,
     metalness: 0.15,
     transparent: true,
@@ -437,18 +440,20 @@ export function createSCBAFaceMask() {
  *
  * Attaches directly to the humanoid avatar's head bone.
  */
-export function createSafetyHelmet() {
+export function createSafetyHelmet(options = {}) {
   const helmet = new THREE.Group();
   helmet.name = "PPE_Safety_Helmet";
 
+  const shellColor = options.color !== undefined ? options.color : 0xfac000;
   const shellYellowMat = new THREE.MeshStandardMaterial({
-    color: 0xfac000,
+    color: shellColor,
     roughness: 0.22,
     metalness: 0.12,
   });
 
+  const ridgeColor = options.ridgeColor !== undefined ? options.ridgeColor : 0xeb9800;
   const crownRidgeMat = new THREE.MeshStandardMaterial({
-    color: 0xeb9800,
+    color: ridgeColor,
     roughness: 0.25,
     metalness: 0.15,
   });
@@ -623,12 +628,13 @@ export function createSafetyHelmet() {
  *
  * Attaches directly to the humanoid avatar's chest/spine bone.
  */
-export function createSafetyVest() {
+export function createSafetyVest(options = {}) {
   const vest = new THREE.Group();
   vest.name = "PPE_Safety_Vest";
 
+  const fabricColor = options.color !== undefined ? options.color : 0xbcee00;
   const neonFabricMat = new THREE.MeshStandardMaterial({
-    color: 0xbcee00, // High-visibility fluorescent neon yellow-green
+    color: fabricColor, // High-visibility fluorescent fabric
     roughness: 0.8,
     metalness: 0.04,
   });
@@ -901,14 +907,17 @@ export function createSafetyVest() {
  * Attaches directly to the humanoid avatar's leftHand (wristL) and rightHand (wristR) bones.
  * @param {"left"|"right"} hand
  */
-export function createProtectiveGloves(hand = "left") {
+export function createProtectiveGloves(handOrOptions = "left", maybeOptions = {}) {
+  const hand = typeof handOrOptions === "string" ? handOrOptions : handOrOptions?.hand || "left";
+  const options = typeof handOrOptions === "object" ? handOrOptions : maybeOptions;
   const glove = new THREE.Group();
   glove.name = `PPE_Protective_Glove_${hand.toUpperCase()}`;
   const isLeft = hand === "left";
   const sign = isLeft ? 1 : -1;
 
+  const gloveColor = options.color !== undefined ? options.color : 0xf26522;
   const orangeHiVisMat = new THREE.MeshStandardMaterial({
-    color: 0xf26522, // High-visibility safety neon orange
+    color: gloveColor, // High-visibility safety fabric
     roughness: 0.55,
     metalness: 0.08,
   });

@@ -45,6 +45,19 @@ const visionWasmFiles = ["vision_wasm_internal.js", "vision_wasm_internal.wasm"]
 export default defineConfig({
   root: projectDirectory,
   publicDir: resolve(frontendDirectory, "public"),
+  server: {
+    host: "127.0.0.1",
+    watch: {
+      ignored: [
+        "**/AI-Safety-Mirror-Portable/**",
+        "**/dist/**",
+        "**/.venv/**",
+        "**/*.tmp",
+        "**/*.TMP",
+        "**/recordings/**",
+      ],
+    },
+  },
   plugins: [
     {
       name: "scba-mask-model",

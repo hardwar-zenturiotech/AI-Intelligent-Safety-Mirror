@@ -10,6 +10,7 @@ import {
   createSafetyVest,
   createProtectiveGloves,
 } from "./scbaApparatus.js";
+import { CustomModelManager } from "./src/ppe/customModelManager.js";
 import { BodyMeshViewer } from "./src/visualization/bodyMeshViewer.js";
 
 const LANDMARKS = { leftHip: 23, rightHip: 24, leftShoulder: 11, rightShoulder: 12 };
@@ -108,9 +109,10 @@ class AdaptivePointFilter {
 }
 
 export class Avatar {
-  constructor(container, onStatus) {
+  constructor(container, onStatus, options = {}) {
     this.container = container;
     this.onStatus = onStatus;
+    this.options = options;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
     this.camera.position.z = 1000;
@@ -186,13 +188,20 @@ export class Avatar {
     this.scbaMask = null;
     this.ppeHelmet = null;
     this.ppeVest = null;
+    this.ppeFront = null;
     this.ppeGloveL = null;
     this.ppeGloveR = null;
+    this.customModelManager = options?.customModelManager || new CustomModelManager();
+    this.customModelManager.onChange((event) => {
+      this.handleCustomModelChange(event);
+    });
+    this.bodyMeshViewer.setCustomModelManager(this.customModelManager);
     this.ppeVisibility = {
       helmet: false,
       vest: false,
       gloves: false,
       respirator: false,
+      front: false,
     };
     this.avatarBodyMode = "occluder";
     this.lastTime = performance.now();
@@ -216,6 +225,7 @@ export class Avatar {
       this.model = gltf.scene;
       this.model.updateMatrixWorld(true);
       const rig = inspectHumanoidRig(this.model);
+      this.rig = rig;
       const report = getRigReport(rig);
       this.report = report;
       this.onStatus({ state: "inspecting", ...report });
@@ -337,27 +347,27 @@ export class Avatar {
 
       if (chestBone) {
         // SCBA back air cylinder apparatus
-        this.scbaCylinder = createSCBACylinderApparatus();
-        this.scbaCylinder.scale.setScalar(1.02);
-        this.scbaCylinder.position.set(0, 0.085, -0.118);
+        this.scbaCylinder = this.customModelManager.instantiateSlotMesh("back");
         this.scbaCylinder.renderOrder = 2;
         this.scbaCylinder.visible = Boolean(this.ppeVisibility.respirator);
         chestBone.add(this.scbaCylinder);
 
         // High-visibility safety vest
-        this.ppeVest = createSafetyVest();
-        this.ppeVest.scale.setScalar(1.20);
-        this.ppeVest.position.set(0, 0.150, 0.012);
+        this.ppeVest = this.customModelManager.instantiateSlotMesh("torso");
         this.ppeVest.renderOrder = 2;
         this.ppeVest.visible = Boolean(this.ppeVisibility.vest);
         chestBone.add(this.ppeVest);
+
+        // Front equipment apparatus
+        this.ppeFront = this.customModelManager.instantiateSlotMesh("front");
+        this.ppeFront.renderOrder = 2;
+        this.ppeFront.visible = Boolean(this.ppeVisibility.vest || this.ppeVisibility.front);
+        chestBone.add(this.ppeFront);
       }
 
       if (headBone) {
         // SCBA full-face gas mask: calibrated to human facial proportions
-        this.scbaMask = createSCBAFaceMask();
-        this.scbaMask.scale.setScalar(0.87);
-        this.scbaMask.position.set(0, -0.018, 0.120);
+        this.scbaMask = this.customModelManager.instantiateSlotMesh("respirator");
         this.scbaMask.renderOrder = 2;
         this.scbaMask.visible = Boolean(this.ppeVisibility.respirator);
         headBone.add(this.scbaMask);
@@ -368,9 +378,7 @@ export class Avatar {
         }
 
         // Safety hard hat helmet
-        this.ppeHelmet = createSafetyHelmet();
-        this.ppeHelmet.scale.setScalar(1.08);
-        this.ppeHelmet.position.set(0, 0.062, 0.010);
+        this.ppeHelmet = this.customModelManager.instantiateSlotMesh("helmet");
         this.ppeHelmet.renderOrder = 2;
         this.ppeHelmet.visible = Boolean(this.ppeVisibility.helmet);
         headBone.add(this.ppeHelmet);
@@ -378,9 +386,7 @@ export class Avatar {
 
       if (leftHandBone) {
         // Left protective gauntlet glove
-        this.ppeGloveL = createProtectiveGloves("left");
-        this.ppeGloveL.scale.setScalar(1.22);
-        this.ppeGloveL.position.set(0, 0, 0);
+        this.ppeGloveL = this.customModelManager.instantiateSlotMesh("gloves", { hand: "left" });
         this.ppeGloveL.renderOrder = 2;
         this.ppeGloveL.visible = Boolean(this.ppeVisibility.gloves);
         leftHandBone.add(this.ppeGloveL);
@@ -388,9 +394,7 @@ export class Avatar {
 
       if (rightHandBone) {
         // Right protective gauntlet glove
-        this.ppeGloveR = createProtectiveGloves("right");
-        this.ppeGloveR.scale.setScalar(1.22);
-        this.ppeGloveR.position.set(0, 0, 0);
+        this.ppeGloveR = this.customModelManager.instantiateSlotMesh("gloves", { hand: "right" });
         this.ppeGloveR.renderOrder = 2;
         this.ppeGloveR.visible = Boolean(this.ppeVisibility.gloves);
         rightHandBone.add(this.ppeGloveR);
@@ -513,6 +517,7 @@ export class Avatar {
       applyVisibility(this.ppeHelmet);
     } else if (type === "vest" && this.ppeVest) {
       applyVisibility(this.ppeVest);
+      if (this.ppeFront) applyVisibility(this.ppeFront);
     } else if (type === "gloves") {
       applyVisibility(this.ppeGloveL);
       applyVisibility(this.ppeGloveR);
@@ -520,9 +525,145 @@ export class Avatar {
       this.scbaVisible = isVis;
       applyVisibility(this.scbaCylinder);
       applyVisibility(this.scbaMask);
+    } else if (type === "front" && this.ppeFront) {
+      applyVisibility(this.ppeFront);
     }
 
     this.bodyMeshViewer?.setPPEVisible(type, isVis);
+
+    if (this.renderer && this.scene && this.camera) {
+      this.renderer.render(this.scene, this.camera);
+    }
+  }
+
+  handleCustomModelChange(event) {
+    if (event.slotId) {
+      const slot = this.customModelManager?.getSlot(event.slotId);
+      const eqKey = slot?.equipmentKey || event.slotId;
+      if (eqKey) {
+        this.ppeVisibility[eqKey] = true;
+        const toggleBtn = document.querySelector(`[data-equipment="${eqKey}"]`);
+        if (toggleBtn) {
+          toggleBtn.setAttribute("aria-pressed", "true");
+          toggleBtn.classList.add("is-active");
+          const checkbox = toggleBtn.querySelector('input[type="checkbox"]');
+          if (checkbox) checkbox.checked = true;
+        }
+      }
+      this.refreshSlotMesh(event.slotId);
+      if (eqKey) {
+        this.setPPEItemVisible(eqKey, true);
+      }
+    }
+  }
+
+  refreshSlotMesh(slotId) {
+    if (!this.rig || !this.rig.mapping) return;
+    const chestBone = this.rig.mapping.chest || this.rig.mapping.spine;
+    const headBone = this.rig.mapping.head;
+    const leftHandBone = this.rig.mapping.leftHand;
+    const rightHandBone = this.rig.mapping.rightHand;
+
+    const safeRemove = (obj, slotKey, parentBone) => {
+      if (obj && obj.parent) {
+        obj.parent.remove(obj);
+      }
+      if (parentBone) {
+        const toRemove = parentBone.children.filter((c) =>
+          c === obj || c.name?.startsWith(`Slot_${slotKey}`)
+        );
+        toRemove.forEach((c) => parentBone.remove(c));
+      }
+    };
+
+    if (slotId === "helmet" && headBone) {
+      safeRemove(this.ppeHelmet, "helmet", headBone);
+      this.ppeHelmet = this.customModelManager.instantiateSlotMesh("helmet");
+      if (this.ppeHelmet) {
+        this.ppeHelmet.renderOrder = 2;
+        this.ppeHelmet.visible = Boolean(this.ppeVisibility.helmet);
+        this.ppeHelmet.traverse((c) => {
+          c.visible = Boolean(this.ppeVisibility.helmet);
+          if (c.isMesh) c.renderOrder = 2;
+        });
+        headBone.add(this.ppeHelmet);
+      }
+    } else if (slotId === "respirator" && headBone) {
+      safeRemove(this.scbaMask, "respirator", headBone);
+      this.scbaMask = this.customModelManager.instantiateSlotMesh("respirator");
+      if (this.scbaMask) {
+        this.scbaMask.renderOrder = 2;
+        this.scbaMask.visible = Boolean(this.ppeVisibility.respirator);
+        this.scbaMask.traverse((c) => {
+          c.visible = Boolean(this.ppeVisibility.respirator);
+          if (c.isMesh) c.renderOrder = 2;
+        });
+        headBone.add(this.scbaMask);
+      }
+    } else if (slotId === "torso" && chestBone) {
+      safeRemove(this.ppeVest, "torso", chestBone);
+      this.ppeVest = this.customModelManager.instantiateSlotMesh("torso");
+      if (this.ppeVest) {
+        this.ppeVest.renderOrder = 2;
+        this.ppeVest.visible = Boolean(this.ppeVisibility.vest);
+        this.ppeVest.traverse((c) => {
+          c.visible = Boolean(this.ppeVisibility.vest);
+          if (c.isMesh) c.renderOrder = 2;
+        });
+        chestBone.add(this.ppeVest);
+      }
+    } else if (slotId === "back" && chestBone) {
+      safeRemove(this.scbaCylinder, "back", chestBone);
+      this.scbaCylinder = this.customModelManager.instantiateSlotMesh("back");
+      if (this.scbaCylinder) {
+        this.scbaCylinder.renderOrder = 2;
+        this.scbaCylinder.visible = Boolean(this.ppeVisibility.respirator);
+        this.scbaCylinder.traverse((c) => {
+          c.visible = Boolean(this.ppeVisibility.respirator);
+          if (c.isMesh) c.renderOrder = 2;
+        });
+        chestBone.add(this.scbaCylinder);
+      }
+    } else if (slotId === "front" && chestBone) {
+      safeRemove(this.ppeFront, "front", chestBone);
+      this.ppeFront = this.customModelManager.instantiateSlotMesh("front");
+      if (this.ppeFront) {
+        this.ppeFront.renderOrder = 2;
+        this.ppeFront.visible = Boolean(this.ppeVisibility.vest || this.ppeVisibility.front);
+        this.ppeFront.traverse((c) => {
+          c.visible = Boolean(this.ppeVisibility.vest || this.ppeVisibility.front);
+          if (c.isMesh) c.renderOrder = 2;
+        });
+        chestBone.add(this.ppeFront);
+      }
+    } else if (slotId === "gloves") {
+      if (leftHandBone) {
+        safeRemove(this.ppeGloveL, "gloves", leftHandBone);
+        this.ppeGloveL = this.customModelManager.instantiateSlotMesh("gloves", { hand: "left" });
+        if (this.ppeGloveL) {
+          this.ppeGloveL.renderOrder = 2;
+          this.ppeGloveL.visible = Boolean(this.ppeVisibility.gloves);
+          this.ppeGloveL.traverse((c) => {
+            c.visible = Boolean(this.ppeVisibility.gloves);
+            if (c.isMesh) c.renderOrder = 2;
+          });
+          leftHandBone.add(this.ppeGloveL);
+        }
+      }
+      if (rightHandBone) {
+        safeRemove(this.ppeGloveR, "gloves", rightHandBone);
+        this.ppeGloveR = this.customModelManager.instantiateSlotMesh("gloves", { hand: "right" });
+        if (this.ppeGloveR) {
+          this.ppeGloveR.renderOrder = 2;
+          this.ppeGloveR.visible = Boolean(this.ppeVisibility.gloves);
+          this.ppeGloveR.traverse((c) => {
+            c.visible = Boolean(this.ppeVisibility.gloves);
+            if (c.isMesh) c.renderOrder = 2;
+          });
+          rightHandBone.add(this.ppeGloveR);
+        }
+      }
+    }
 
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera);

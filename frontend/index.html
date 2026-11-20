@@ -9,9 +9,6 @@
     />
     <title>Safety Mirror | Zenturio</title>
     <link rel="stylesheet" href="./style.css" />
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js"></script>
     <script type="module" src="./main.js"></script>
   </head>
   <body>
@@ -430,6 +427,135 @@
                 Face tracking and 3D pose retargeting position the SCBA mask on the face
                 and the SCBA compressed air cylinder apparatus on the back.
               </p>
+            </div>
+
+            <div class="equipment-customizer" id="equipmentCustomizerSection">
+              <div class="panel-heading customizer-header">
+                <div>
+                  <p class="eyebrow">CUSTOM 3D ASSETS</p>
+                  <h3 id="customizerTitle">3D Equipment Slots</h3>
+                </div>
+                <span class="customizer-badge" id="customizerBadge">DEFAULT MODELS</span>
+              </div>
+
+              <p class="equipment-intro">
+                Upload your own 3D models (GLB, GLTF, FBX, OBJ) to replace or customize each equipment slot.
+              </p>
+
+              <!-- Slot Selector Pills -->
+              <div class="slot-selector" role="tablist" aria-label="3D Equipment Slots">
+                <button class="slot-pill active" type="button" role="tab" data-slot="helmet" id="slotTabHelmet" aria-selected="true">
+                  <span class="slot-pill-icon">🪖</span>
+                  <span>Helmet</span>
+                </button>
+                <button class="slot-pill" type="button" role="tab" data-slot="respirator" id="slotTabRespirator" aria-selected="false">
+                  <span class="slot-pill-icon">🤿</span>
+                  <span>Respirator</span>
+                </button>
+                <button class="slot-pill" type="button" role="tab" data-slot="torso" id="slotTabTorso" aria-selected="false">
+                  <span class="slot-pill-icon">🦺</span>
+                  <span>Torso</span>
+                </button>
+                <button class="slot-pill" type="button" role="tab" data-slot="gloves" id="slotTabGloves" aria-selected="false">
+                  <span class="slot-pill-icon">🧤</span>
+                  <span>Gloves</span>
+                </button>
+                <button class="slot-pill" type="button" role="tab" data-slot="back" id="slotTabBack" aria-selected="false">
+                  <span class="slot-pill-icon">🎒</span>
+                  <span>Back</span>
+                </button>
+                <button class="slot-pill" type="button" role="tab" data-slot="front" id="slotTabFront" aria-selected="false">
+                  <span class="slot-pill-icon">🛡️</span>
+                  <span>Front</span>
+                </button>
+              </div>
+
+              <!-- Active Slot Card -->
+              <div class="slot-card" id="activeSlotCard">
+                <div class="slot-card-header">
+                  <div>
+                    <h4 id="slotCardName" class="slot-card-title">Safety Helmet</h4>
+                    <p id="slotCardCategory" class="slot-card-subtitle">Head Protection · Anchored to Head Bone</p>
+                  </div>
+                  <span id="slotModelStatus" class="slot-status-pill default">Built-in Model</span>
+                </div>
+
+                <!-- Active Model Selection Dropdown -->
+                <div class="slot-select-row">
+                  <label class="slot-select-label" for="slotModelSelect">
+                    <span class="slot-select-title">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                      <span>Choose 3D Model:</span>
+                    </span>
+                    <select id="slotModelSelect" class="slot-model-select">
+                      <!-- Populated dynamically with presets and uploaded custom models -->
+                    </select>
+                  </label>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="slot-actions">
+                  <label class="slot-upload-label" for="slotModelUploadInput">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <span>Upload 3D Model</span>
+                    <input type="file" id="slotModelUploadInput" accept=".glb,.gltf,.fbx,.obj" style="display: none;" />
+                  </label>
+                  <button class="reset-button slot-reset-btn" id="btnResetSlotModel" type="button">
+                    Reset to Default
+                  </button>
+                  <button class="slot-preview-btn" id="btnPreviewSlotModel" type="button">
+                    Preview 3D
+                  </button>
+                </div>
+
+                <!-- Fine-Tuning Calibration Sliders -->
+                <div class="slot-calibration-grid">
+                  <label class="calibration-slider" for="slotScale">
+                    <span class="calibration-label">
+                      <span>Scale</span>
+                      <output id="slotScaleVal" for="slotScale">108%</output>
+                    </span>
+                    <input id="slotScale" type="range" min="20" max="300" value="108" />
+                  </label>
+
+                  <label class="calibration-slider" for="slotPosX">
+                    <span class="calibration-label">
+                      <span>Offset X</span>
+                      <output id="slotPosXVal" for="slotPosX">0 mm</output>
+                    </span>
+                    <input id="slotPosX" type="range" min="-300" max="300" value="0" />
+                  </label>
+
+                  <label class="calibration-slider" for="slotPosY">
+                    <span class="calibration-label">
+                      <span>Offset Y</span>
+                      <output id="slotPosYVal" for="slotPosY">62 mm</output>
+                    </span>
+                    <input id="slotPosY" type="range" min="-300" max="300" value="62" />
+                  </label>
+
+                  <label class="calibration-slider" for="slotPosZ">
+                    <span class="calibration-label">
+                      <span>Depth (Z)</span>
+                      <output id="slotPosZVal" for="slotPosZ">10 mm</output>
+                    </span>
+                    <input id="slotPosZ" type="range" min="-400" max="400" value="10" />
+                  </label>
+
+                  <label class="calibration-slider" for="slotRotY">
+                    <span class="calibration-label">
+                      <span>Yaw Rotation</span>
+                      <output id="slotRotYVal" for="slotRotY">0°</output>
+                    </span>
+                    <input id="slotRotY" type="range" min="-180" max="180" value="0" />
+                  </label>
+                </div>
+
+                <div class="slot-card-footer">
+                  <span class="slot-format-badge">GLB · GLTF · FBX · OBJ</span>
+                  <span class="slot-filename-readout" id="slotFilenameReadout">Using Built-in Model</span>
+                </div>
+              </div>
             </div>
           </aside>
         </div>

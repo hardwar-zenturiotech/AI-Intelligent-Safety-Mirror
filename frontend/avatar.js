@@ -36,7 +36,7 @@ function mapVisibleLandmarkToStage(landmark, video, stage) {
 }
 
 class AdaptiveScalarFilter {
-  constructor(minCutoff = 0.6, beta = 4.0) {
+  constructor(minCutoff = 0.30, beta = 8.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.current = 0;
@@ -56,7 +56,7 @@ class AdaptiveScalarFilter {
 
     const diff = Math.abs(this.current - target);
     // Subtle deadband on micro-scale fluctuations to stop size breathing
-    const effectiveDiff = diff > 0.015 * Math.abs(this.current) ? diff : diff * 0.1;
+    const effectiveDiff = diff > 0.012 * Math.abs(this.current) ? diff - 0.012 * Math.abs(this.current) : diff * 0.1;
     const speed = deltaSeconds > 0 ? effectiveDiff / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
@@ -71,7 +71,7 @@ class AdaptiveScalarFilter {
 }
 
 class AdaptivePointFilter {
-  constructor(minCutoff = 0.8, beta = 5.0) {
+  constructor(minCutoff = 0.35, beta = 14.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.currentX = 0;
@@ -93,7 +93,7 @@ class AdaptivePointFilter {
 
     const dist = Math.hypot(targetX - this.currentX, targetY - this.currentY);
     // Deadband on sub-pixel micro-jitter to prevent shivering while standing still
-    const effectiveDist = dist > 2.2 ? dist - 2.2 : dist * 0.1;
+    const effectiveDist = dist > 1.8 ? dist - 1.8 : dist * 0.1;
     const speed = deltaSeconds > 0 ? effectiveDist / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
@@ -179,9 +179,9 @@ export class Avatar {
     this.lastJointOffsets = {};
     this.calibrationHelpers = [];
     this.calibrationDebugVisible = false;
-    this.originFilter = new AdaptivePointFilter(0.8, 12.0);
-    this.scaleFilter = new AdaptiveScalarFilter(0.4, 6.0);
-    this.widthFactorFilter = new AdaptiveScalarFilter(0.4, 6.0);
+    this.originFilter = new AdaptivePointFilter(0.35, 14.0);
+    this.scaleFilter = new AdaptiveScalarFilter(0.30, 8.0);
+    this.widthFactorFilter = new AdaptiveScalarFilter(0.30, 8.0);
     this.silhouetteBounds = null;
     this.scbaVisible = false;
     this.scbaCylinder = null;
@@ -1048,10 +1048,11 @@ export class Avatar {
         ? headShoulderHeight / this.modelHeadShoulderHeight
         : 0;
 
-    if (ankleScale > 0) {
+    if (ankleScale > 0 && ankleY !== null && imageLeftAnkle && imageRightAnkle && detectedHeadToAnkle > 100) {
       scale = ankleScale;
       this.lastScaleReference = "head-to-ankles";
     } else if (torsoScale > 0) {
+      // Torso vertical height is invariant under yaw turns (eliminates breathing/flashing)
       scale = torsoScale;
       this.lastScaleReference = "torso height";
     } else if (headScale > 0) {
@@ -1164,13 +1165,13 @@ export class Avatar {
     }
 
     // 7. Responsive continuous time-based smoothing with rapid fast-movement tracking
-    let posAlpha = 1 - Math.exp(-24 * delta);
-    let scaleAlpha = 1 - Math.exp(-20 * delta);
+    let posAlpha = 1 - Math.exp(-48 * delta);
+    let scaleAlpha = 1 - Math.exp(-32 * delta);
 
     const posDist = this.group.position.distanceTo(this.positionTarget);
-    // When moving quickly (>20px shift), increase responsiveness so mask stays locked to the face
-    const boost = THREE.MathUtils.clamp((posDist - 20) / 40, 0, 0.65);
-    posAlpha = THREE.MathUtils.clamp(posAlpha + boost, 0.20, 0.95);
+    // When moving quickly (>12px shift), increase responsiveness so attachments stay locked in lockstep
+    const boost = THREE.MathUtils.clamp((posDist - 12) / 25, 0, 0.70);
+    posAlpha = THREE.MathUtils.clamp(posAlpha + boost, 0.40, 1.0);
 
     this.group.scale.lerp(this.scaleTarget, scaleAlpha);
     this.group.position.lerp(this.positionTarget, posAlpha);

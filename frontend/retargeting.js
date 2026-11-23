@@ -109,7 +109,7 @@ export function convertMediaPipeWorldVector(point, target) {
 }
 
 export class AdaptiveQuaternionFilter {
-  constructor(minCutoff = 0.5, beta = 2.5) {
+  constructor(minCutoff = 0.35, beta = 6.5) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.current = new THREE.Quaternion();
@@ -139,8 +139,8 @@ export class AdaptiveQuaternionFilter {
       clampedTarget = this.current.clone().slerp(targetNormalized, maxStep / angle);
     }
 
-    // Micro-motion deadband to prevent standing tremor
-    const effectiveAngle = angle > 0.015 ? angle - 0.015 : angle * 0.2;
+    // Micro-motion deadband to prevent standing tremor and sensor flicker
+    const effectiveAngle = angle > 0.010 ? angle - 0.010 : angle * 0.15;
     const speed = deltaSeconds > 0 ? effectiveAngle / deltaSeconds : 0;
 
     const cutoff = this.minCutoff + this.beta * speed;
@@ -165,7 +165,7 @@ export class AdaptiveQuaternionFilter {
 }
 
 export class AdaptiveDirectionFilter {
-  constructor(minCutoff = 0.6, beta = 3.0) {
+  constructor(minCutoff = 0.40, beta = 6.5) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.current = new THREE.Vector3();
@@ -184,8 +184,8 @@ export class AdaptiveDirectionFilter {
     }
 
     const dist = this.current.distanceTo(target);
-    // Micro-motion deadband to prevent limb buzzing
-    const effectiveDist = dist > 0.012 ? dist - 0.012 : dist * 0.2;
+    // Micro-motion deadband to prevent limb buzzing and jitter
+    const effectiveDist = dist > 0.008 ? dist - 0.008 : dist * 0.15;
     const speed = deltaSeconds > 0 ? effectiveDist / deltaSeconds : 0;
     const cutoff = this.minCutoff + this.beta * speed;
     const alpha = THREE.MathUtils.clamp(
@@ -261,12 +261,14 @@ export class MotionRetargeter {
     this.torsoEuler = new THREE.Euler(0, 0, 0, "YXZ");
     this.delta = new THREE.Quaternion();
     this.tracked = false;
-    this.torsoFilter = new AdaptiveQuaternionFilter(0.8, 5.0);
-    this.headFilter = new AdaptiveQuaternionFilter(0.8, 5.0);
+    this.torsoFilter = new AdaptiveQuaternionFilter(0.35, 6.5);
+    this.headFilter = new AdaptiveQuaternionFilter(0.35, 7.0);
+    this.leftHandFilter = new AdaptiveDirectionFilter(0.40, 6.5);
+    this.rightHandFilter = new AdaptiveDirectionFilter(0.40, 6.5);
     this.segmentFilters = new Map();
     this.segmentLostFrames = new Map();
     for (const [role] of SEGMENTS) {
-      this.segmentFilters.set(role, new AdaptiveDirectionFilter(0.9, 5.5));
+      this.segmentFilters.set(role, new AdaptiveDirectionFilter(0.40, 6.5));
       this.segmentLostFrames.set(role, 0);
     }
     this.torsoLostFrames = 0;
@@ -346,6 +348,8 @@ export class MotionRetargeter {
       ["leftForearm", byRole.leftForearm, byRole.leftHand],
       ["rightUpperArm", byRole.rightUpperArm, byRole.rightForearm],
       ["rightForearm", byRole.rightForearm, byRole.rightHand],
+      ["leftHand", byRole.leftHand, null],
+      ["rightHand", byRole.rightHand, null],
       ["leftUpperLeg", byRole.leftUpperLeg, byRole.leftLeg],
       ["leftLeg", byRole.leftLeg, null],
       ["rightUpperLeg", byRole.rightUpperLeg, byRole.rightLeg],
@@ -359,11 +363,19 @@ export class MotionRetargeter {
       }
       bone.getWorldPosition(from);
       const joint = child || bone.children.find((object) => object.isBone);
-      if (!joint) {
+      if (joint) {
+        joint.getWorldPosition(to);
+        this.restDirection.subVectors(to, from);
+      } else if (role === "leftHand" && byRole.leftForearm) {
+        // Fallback: extend forearm rest vector forward for hand
+        byRole.leftForearm.getWorldPosition(to);
+        this.restDirection.subVectors(from, to);
+      } else if (role === "rightHand" && byRole.rightForearm) {
+        byRole.rightForearm.getWorldPosition(to);
+        this.restDirection.subVectors(from, to);
+      } else {
         continue;
       }
-      joint.getWorldPosition(to);
-      this.restDirection.subVectors(to, from);
       if (this.restDirection.lengthSq() > 1e-8) {
         this.directionOffsets.set(role, { local: this.restDirection.clone().normalize() });
       }
@@ -381,6 +393,8 @@ export class MotionRetargeter {
     this.headRelativeFiltered.identity();
     this.torsoFilter.reset();
     this.headFilter.reset();
+    this.leftHandFilter?.reset();
+    this.rightHandFilter?.reset();
     for (const filter of this.segmentFilters.values()) {
       filter.reset();
     }
@@ -480,6 +494,9 @@ export class MotionRetargeter {
       const headUpdated = this.updateHead(worldLandmarks, delta, smoothing);
       if (!headUpdated) this.restoreHead(smoothing);
       updated = headUpdated || updated;
+
+      const handsUpdated = this.updateHands(landmarks, worldLandmarks, delta, smoothing);
+      updated = handsUpdated || updated;
     }
 
     if (!updated) {
@@ -756,6 +773,94 @@ export class MotionRetargeter {
     // filteredHeadFrame is adaptively filtered; apply directly to eliminate latency
     this.applyWorldRotation(head, this.desiredWorld, smoothing);
     return true;
+  }
+
+  updateHands(landmarks, worldLandmarks, delta = 0.016, smoothing = 1.0) {
+    let handsUpdated = false;
+    const leftHandBone = this.mapping.leftHand;
+    const rightHandBone = this.mapping.rightHand;
+
+    // 1. Left Hand / Wrist tracking
+    if (leftHandBone && this.restWorld.has(leftHandBone)) {
+      const hasWristL = isLandmarkUsable(landmarks[15], CONFIDENCE_THRESHOLD) && isLandmarkUsable(worldLandmarks[15], CONFIDENCE_THRESHOLD);
+      const hasIndexL = isLandmarkUsable(landmarks[19], CONFIDENCE_THRESHOLD) && isLandmarkUsable(worldLandmarks[19], CONFIDENCE_THRESHOLD);
+      const hasPinkyL = isLandmarkUsable(landmarks[17], CONFIDENCE_THRESHOLD) && isLandmarkUsable(worldLandmarks[17], CONFIDENCE_THRESHOLD);
+
+      if (hasWristL && (hasIndexL || hasPinkyL)) {
+        const targetPt = (hasIndexL && hasPinkyL)
+          ? {
+              x: (worldLandmarks[19].x + worldLandmarks[17].x) * 0.5,
+              y: (worldLandmarks[19].y + worldLandmarks[17].y) * 0.5,
+              z: (worldLandmarks[19].z + worldLandmarks[17].z) * 0.5,
+            }
+          : (hasIndexL ? worldLandmarks[19] : worldLandmarks[17]);
+
+        this.direction.set(
+          targetPt.x - worldLandmarks[15].x,
+          targetPt.y - worldLandmarks[15].y,
+          targetPt.z - worldLandmarks[15].z,
+        );
+
+        if (this.direction.lengthSq() > 1e-6) {
+          convertMediaPipeWorldVector(this.direction, this.direction);
+          this.direction.normalize();
+          const restDirections = this.directionOffsets.get("leftHand");
+          if (restDirections) {
+            const filteredDir = this.leftHandFilter
+              ? this.leftHandFilter.filter(this.direction, delta)
+              : this.direction;
+            this.delta.setFromUnitVectors(restDirections.local, filteredDir);
+            this.desiredWorld.copy(this.delta).multiply(this.restWorld.get(leftHandBone));
+            this.applyWorldRotation(leftHandBone, this.desiredWorld, smoothing);
+            handsUpdated = true;
+          }
+        }
+      } else {
+        this.restoreBone(leftHandBone, smoothing * 0.15);
+      }
+    }
+
+    // 2. Right Hand / Wrist tracking
+    if (rightHandBone && this.restWorld.has(rightHandBone)) {
+      const hasWristR = isLandmarkUsable(landmarks[16], CONFIDENCE_THRESHOLD) && isLandmarkUsable(worldLandmarks[16], CONFIDENCE_THRESHOLD);
+      const hasIndexR = isLandmarkUsable(landmarks[20], CONFIDENCE_THRESHOLD) && isLandmarkUsable(worldLandmarks[20], CONFIDENCE_THRESHOLD);
+      const hasPinkyR = isLandmarkUsable(landmarks[18], CONFIDENCE_THRESHOLD) && isLandmarkUsable(worldLandmarks[18], CONFIDENCE_THRESHOLD);
+
+      if (hasWristR && (hasIndexR || hasPinkyR)) {
+        const targetPt = (hasIndexR && hasPinkyR)
+          ? {
+              x: (worldLandmarks[20].x + worldLandmarks[18].x) * 0.5,
+              y: (worldLandmarks[20].y + worldLandmarks[18].y) * 0.5,
+              z: (worldLandmarks[20].z + worldLandmarks[18].z) * 0.5,
+            }
+          : (hasIndexR ? worldLandmarks[20] : worldLandmarks[18]);
+
+        this.direction.set(
+          targetPt.x - worldLandmarks[16].x,
+          targetPt.y - worldLandmarks[16].y,
+          targetPt.z - worldLandmarks[16].z,
+        );
+
+        if (this.direction.lengthSq() > 1e-6) {
+          convertMediaPipeWorldVector(this.direction, this.direction);
+          this.direction.normalize();
+          const restDirections = this.directionOffsets.get("rightHand");
+          if (restDirections) {
+            const filteredDir = this.rightHandFilter
+              ? this.rightHandFilter.filter(this.direction, delta)
+              : this.direction;
+            this.delta.setFromUnitVectors(restDirections.local, filteredDir);
+            this.desiredWorld.copy(this.delta).multiply(this.restWorld.get(rightHandBone));
+            this.applyWorldRotation(rightHandBone, this.desiredWorld, smoothing);
+            handsUpdated = true;
+          }
+        }
+      } else {
+        this.restoreBone(rightHandBone, smoothing * 0.15);
+      }
+    }
+
+    return handsUpdated;
   }
 
   restoreHead(smoothing) {

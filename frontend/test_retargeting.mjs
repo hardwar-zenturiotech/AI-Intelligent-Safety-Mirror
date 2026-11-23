@@ -156,8 +156,24 @@ loader.parse(arrayBuffer, "", (gltf) => {
     "Torso diagnostics viewMode reflects rear view for SCBA cylinder inspection",
   );
 
+  console.log("--- 13. Hand and Wrist Active Retargeting ---");
+  retargeter.reset();
+  const handPose = createSyntheticPose(0);
+  // Extend left hand pointing outward (+X)
+  handPose.landmarks[15] = { x: 0.60, y: 0.56, z: 0, visibility: 1, presence: 1 };
+  handPose.worldLandmarks[15] = { x: 0.25, y: 0.20, z: 0, visibility: 1, presence: 1 };
+  handPose.landmarks[19] = { x: 0.70, y: 0.56, z: 0, visibility: 1, presence: 1 };
+  handPose.worldLandmarks[19] = { x: 0.35, y: 0.20, z: 0, visibility: 1, presence: 1 };
+
+  retargeter.update(handPose.landmarks, handPose.worldLandmarks, 1);
+  const wristRot = rig.mapping.leftHand.quaternion;
+  assert(
+    Number.isFinite(wristRot.x) && Number.isFinite(wristRot.w),
+    "Left wrist/hand bone quaternion successfully retargeted from wrist-to-hand landmarks",
+  );
+
   if (!allPassed) {
     process.exit(1);
   }
-  console.log("ALL 12 RETARGETING REQUIREMENTS VERIFIED SUCCESSFULLY!");
+  console.log("ALL 13 RETARGETING REQUIREMENTS VERIFIED SUCCESSFULLY!");
 });

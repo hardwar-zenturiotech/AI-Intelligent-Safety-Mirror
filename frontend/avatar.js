@@ -418,6 +418,23 @@ export class Avatar {
     this.avatarBodyMode = mode; // "visible" | "occluder" | "hidden"
     if (!this.model) return;
     this.model.traverse((obj) => {
+      // ONLY apply occluder mode to humanoid body meshes, NEVER to attached PPE items!
+      let isPPE = false;
+      let curr = obj;
+      while (curr && curr !== this.model) {
+        if (
+          curr.name?.startsWith("Slot_") ||
+          curr.name?.startsWith("PPE_") ||
+          curr.name?.startsWith("SCBA_") ||
+          curr.name?.startsWith("Front_")
+        ) {
+          isPPE = true;
+          break;
+        }
+        curr = curr.parent;
+      }
+      if (isPPE) return;
+
       if (obj.isSkinnedMesh) {
         const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
         for (const mat of materials) {
@@ -502,12 +519,23 @@ export class Avatar {
     const applyVisibility = (group) => {
       if (!group) return;
       group.visible = isVis;
+      group.renderOrder = 2;
       group.traverse((child) => {
         child.visible = isVis;
-        if (child.material) {
-          const mats = Array.isArray(child.material) ? child.material : [child.material];
-          for (const m of mats) {
-            if (m) m.needsUpdate = true;
+        if (child.isMesh) {
+          child.renderOrder = 2;
+          child.castShadow = true;
+          child.receiveShadow = true;
+          if (child.material) {
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            for (const m of mats) {
+              if (m) {
+                m.colorWrite = true;
+                m.depthWrite = true;
+                m.depthTest = true;
+                m.needsUpdate = true;
+              }
+            }
           }
         }
       });
@@ -542,6 +570,9 @@ export class Avatar {
       const eqKey = slot?.equipmentKey || event.slotId;
       if (eqKey) {
         this.ppeVisibility[eqKey] = true;
+        if (event.slotId === "front") {
+          this.ppeVisibility["front"] = true;
+        }
         const toggleBtn = document.querySelector(`[data-equipment="${eqKey}"]`);
         if (toggleBtn) {
           toggleBtn.setAttribute("aria-pressed", "true");
@@ -553,6 +584,9 @@ export class Avatar {
       this.refreshSlotMesh(event.slotId);
       if (eqKey) {
         this.setPPEItemVisible(eqKey, true);
+      }
+      if (event.slotId === "front") {
+        this.setPPEItemVisible("front", true);
       }
     }
   }
@@ -576,64 +610,64 @@ export class Avatar {
       }
     };
 
+    const activateItem = (group, isVisible) => {
+      if (!group) return;
+      group.visible = isVisible;
+      group.renderOrder = 2;
+      group.traverse((c) => {
+        c.visible = isVisible;
+        if (c.isMesh) {
+          c.renderOrder = 2;
+          c.castShadow = true;
+          c.receiveShadow = true;
+          if (c.material) {
+            const mats = Array.isArray(c.material) ? c.material : [c.material];
+            mats.forEach((m) => {
+              if (m) {
+                m.colorWrite = true;
+                m.depthWrite = true;
+                m.depthTest = true;
+                m.needsUpdate = true;
+              }
+            });
+          }
+        }
+      });
+    };
+
     if (slotId === "helmet" && headBone) {
       safeRemove(this.ppeHelmet, "helmet", headBone);
       this.ppeHelmet = this.customModelManager.instantiateSlotMesh("helmet");
       if (this.ppeHelmet) {
-        this.ppeHelmet.renderOrder = 2;
-        this.ppeHelmet.visible = Boolean(this.ppeVisibility.helmet);
-        this.ppeHelmet.traverse((c) => {
-          c.visible = Boolean(this.ppeVisibility.helmet);
-          if (c.isMesh) c.renderOrder = 2;
-        });
+        activateItem(this.ppeHelmet, Boolean(this.ppeVisibility.helmet));
         headBone.add(this.ppeHelmet);
       }
     } else if (slotId === "respirator" && headBone) {
       safeRemove(this.scbaMask, "respirator", headBone);
       this.scbaMask = this.customModelManager.instantiateSlotMesh("respirator");
       if (this.scbaMask) {
-        this.scbaMask.renderOrder = 2;
-        this.scbaMask.visible = Boolean(this.ppeVisibility.respirator);
-        this.scbaMask.traverse((c) => {
-          c.visible = Boolean(this.ppeVisibility.respirator);
-          if (c.isMesh) c.renderOrder = 2;
-        });
+        activateItem(this.scbaMask, Boolean(this.ppeVisibility.respirator));
         headBone.add(this.scbaMask);
       }
     } else if (slotId === "torso" && chestBone) {
       safeRemove(this.ppeVest, "torso", chestBone);
       this.ppeVest = this.customModelManager.instantiateSlotMesh("torso");
       if (this.ppeVest) {
-        this.ppeVest.renderOrder = 2;
-        this.ppeVest.visible = Boolean(this.ppeVisibility.vest);
-        this.ppeVest.traverse((c) => {
-          c.visible = Boolean(this.ppeVisibility.vest);
-          if (c.isMesh) c.renderOrder = 2;
-        });
+        activateItem(this.ppeVest, Boolean(this.ppeVisibility.vest));
         chestBone.add(this.ppeVest);
       }
     } else if (slotId === "back" && chestBone) {
       safeRemove(this.scbaCylinder, "back", chestBone);
       this.scbaCylinder = this.customModelManager.instantiateSlotMesh("back");
       if (this.scbaCylinder) {
-        this.scbaCylinder.renderOrder = 2;
-        this.scbaCylinder.visible = Boolean(this.ppeVisibility.respirator);
-        this.scbaCylinder.traverse((c) => {
-          c.visible = Boolean(this.ppeVisibility.respirator);
-          if (c.isMesh) c.renderOrder = 2;
-        });
+        activateItem(this.scbaCylinder, Boolean(this.ppeVisibility.respirator));
         chestBone.add(this.scbaCylinder);
       }
     } else if (slotId === "front" && chestBone) {
       safeRemove(this.ppeFront, "front", chestBone);
       this.ppeFront = this.customModelManager.instantiateSlotMesh("front");
       if (this.ppeFront) {
-        this.ppeFront.renderOrder = 2;
-        this.ppeFront.visible = Boolean(this.ppeVisibility.vest || this.ppeVisibility.front);
-        this.ppeFront.traverse((c) => {
-          c.visible = Boolean(this.ppeVisibility.vest || this.ppeVisibility.front);
-          if (c.isMesh) c.renderOrder = 2;
-        });
+        activateItem(this.ppeFront, Boolean(this.ppeVisibility.vest || this.ppeVisibility.front));
         chestBone.add(this.ppeFront);
       }
     } else if (slotId === "gloves") {
@@ -641,12 +675,7 @@ export class Avatar {
         safeRemove(this.ppeGloveL, "gloves", leftHandBone);
         this.ppeGloveL = this.customModelManager.instantiateSlotMesh("gloves", { hand: "left" });
         if (this.ppeGloveL) {
-          this.ppeGloveL.renderOrder = 2;
-          this.ppeGloveL.visible = Boolean(this.ppeVisibility.gloves);
-          this.ppeGloveL.traverse((c) => {
-            c.visible = Boolean(this.ppeVisibility.gloves);
-            if (c.isMesh) c.renderOrder = 2;
-          });
+          activateItem(this.ppeGloveL, Boolean(this.ppeVisibility.gloves));
           leftHandBone.add(this.ppeGloveL);
         }
       }
@@ -654,12 +683,7 @@ export class Avatar {
         safeRemove(this.ppeGloveR, "gloves", rightHandBone);
         this.ppeGloveR = this.customModelManager.instantiateSlotMesh("gloves", { hand: "right" });
         if (this.ppeGloveR) {
-          this.ppeGloveR.renderOrder = 2;
-          this.ppeGloveR.visible = Boolean(this.ppeVisibility.gloves);
-          this.ppeGloveR.traverse((c) => {
-            c.visible = Boolean(this.ppeVisibility.gloves);
-            if (c.isMesh) c.renderOrder = 2;
-          });
+          activateItem(this.ppeGloveR, Boolean(this.ppeVisibility.gloves));
           rightHandBone.add(this.ppeGloveR);
         }
       }

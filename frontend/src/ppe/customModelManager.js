@@ -399,6 +399,7 @@ export class CustomModelManager {
           mats.forEach((m) => {
             if (m) {
               m.side = THREE.DoubleSide;
+              m.colorWrite = true;
               m.depthWrite = true;
               m.depthTest = true;
               m.needsUpdate = true;

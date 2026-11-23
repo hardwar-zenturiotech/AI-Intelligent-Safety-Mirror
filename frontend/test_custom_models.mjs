@@ -145,4 +145,45 @@ test("CustomModelManager - Slot Configurations & Defaults", async (t) => {
     assert.equal(frontUnit.name, "Front_Chest_Apparatus");
     assert.equal(frontUnit.children.length, 3, "Expected case, screen, and clip meshes");
   });
+
+  await t.test("All 6 slots model switching and hierarchy refresh", () => {
+    const headBone = new THREE.Bone();
+    headBone.name = "head";
+    const chestBone = new THREE.Bone();
+    chestBone.name = "spine03";
+    const wristL = new THREE.Bone();
+    wristL.name = "wristL";
+    const wristR = new THREE.Bone();
+    wristR.name = "wristR";
+
+    const allSlots = ["helmet", "respirator", "torso", "gloves", "back", "front"];
+    allSlots.forEach((slotId) => {
+      const models = manager.getAvailableModels(slotId);
+      assert.ok(models.length >= 2, `Slot "${slotId}" must have multiple presets available`);
+
+      // Switch to secondary model preset
+      const secondModel = models[1];
+      manager.selectModel(slotId, secondModel.id);
+      const slot = manager.getSlot(slotId);
+      assert.equal(slot.selectedModelId, secondModel.id);
+
+      const instantiated = manager.instantiateSlotMesh(slotId);
+      assert.ok(instantiated instanceof THREE.Group, `Slot "${slotId}" must instantiate valid Group`);
+      assert.ok(instantiated.name.startsWith(`Slot_${slotId}`), `Slot "${slotId}" name must follow Slot_${slotId} pattern`);
+      assert.ok(instantiated.children.length > 0, `Slot "${slotId}" must have content children`);
+
+      // Verify materials have colorWrite=true and depthWrite=true
+      instantiated.traverse((c) => {
+        if (c.isMesh && c.material) {
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          mats.forEach((m) => {
+            if (m) {
+              assert.equal(m.colorWrite, true, `Mesh material in slot ${slotId} must have colorWrite=true`);
+              assert.equal(m.depthWrite, true, `Mesh material in slot ${slotId} must have depthWrite=true`);
+            }
+          });
+        }
+      });
+    });
+  });
 });

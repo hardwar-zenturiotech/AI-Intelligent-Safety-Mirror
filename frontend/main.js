@@ -2085,60 +2085,77 @@ function initModelViewer() {
   const viewerModel = new THREE.Group();
   viewerMainGroup = viewerModel;
 
-  // Safety Helmet (top)
-  const viewerHelmet = createSafetyHelmet();
-  viewerHelmet.scale.setScalar(2.0);
-  viewerHelmet.position.set(0, 0.72, 0);
-  viewerHelmet.rotation.y = -Math.PI * 0.12;
-  viewerModel.add(viewerHelmet);
+  function rebuildViewerAssembly() {
+    if (!viewerMainGroup) return;
+    viewerMainGroup.clear();
 
-  // SCBA Face Mask (center-left)
-  const viewerMask = createSCBAFaceMask();
-  viewerMask.scale.setScalar(1.6);
-  viewerMask.position.set(-0.72, 0.05, 0);
-  viewerModel.add(viewerMask);
-
-  // SCBA Back Cylinder Apparatus (center-right)
-  const viewerCylinder = createSCBACylinderApparatus();
-  viewerCylinder.scale.setScalar(1.9);
-  viewerCylinder.position.set(0.72, 0.05, 0);
-  viewerCylinder.rotation.y = Math.PI * 0.85;
-  viewerModel.add(viewerCylinder);
-
-  // High-Visibility Safety Vest (center)
-  const viewerVest = createSafetyVest();
-  viewerVest.scale.setScalar(1.5);
-  viewerVest.position.set(0, -0.28, 0);
-  viewerVest.rotation.y = Math.PI * 0.08;
-  viewerModel.add(viewerVest);
-
-  // Protective Gloves (bottom left & right)
-  const viewerGloveL = createProtectiveGloves("left");
-  viewerGloveL.scale.setScalar(2.6);
-  viewerGloveL.position.set(-0.9, -0.68, 0);
-  viewerGloveL.rotation.y = Math.PI * 0.25;
-  viewerModel.add(viewerGloveL);
-
-  const viewerGloveR = createProtectiveGloves("right");
-  viewerGloveR.scale.setScalar(2.6);
-  viewerGloveR.position.set(0.9, -0.68, 0);
-  viewerGloveR.rotation.y = -Math.PI * 0.25;
-  viewerModel.add(viewerGloveR);
-
-  viewerPPEItems.helmet = viewerHelmet;
-  viewerPPEItems.vest = viewerVest;
-  viewerPPEItems.gloves = [viewerGloveL, viewerGloveR];
-  viewerPPEItems.respirator = [viewerMask, viewerCylinder];
-
-  // Synchronize with current checklist selection state
-  equipmentItems.forEach((item) => {
-    const eqType = item.dataset.equipment;
-    if (eqType) {
-      const isPressed = item.getAttribute("aria-pressed") === "true";
-      setViewerPPEItemVisible(eqType, isPressed);
+    // 1. Safety Helmet (top)
+    const viewerHelmet = avatar.customModelManager.instantiateSlotMesh("helmet");
+    if (viewerHelmet) {
+      viewerHelmet.scale.setScalar(2.0);
+      viewerHelmet.position.set(0, 0.72, 0);
+      viewerHelmet.rotation.y = -Math.PI * 0.12;
+      viewerMainGroup.add(viewerHelmet);
+      viewerPPEItems.helmet = viewerHelmet;
     }
-  });
 
+    // 2. SCBA Face Mask (center-left)
+    const viewerMask = avatar.customModelManager.instantiateSlotMesh("respirator");
+    if (viewerMask) {
+      viewerMask.scale.setScalar(1.6);
+      viewerMask.position.set(-0.72, 0.05, 0);
+      viewerMainGroup.add(viewerMask);
+    }
+
+    // 3. SCBA Back Cylinder Apparatus (center-right)
+    const viewerCylinder = avatar.customModelManager.instantiateSlotMesh("back");
+    if (viewerCylinder) {
+      viewerCylinder.scale.setScalar(1.9);
+      viewerCylinder.position.set(0.72, 0.05, 0);
+      viewerCylinder.rotation.y = Math.PI * 0.85;
+      viewerMainGroup.add(viewerCylinder);
+    }
+    viewerPPEItems.respirator = [viewerMask, viewerCylinder].filter(Boolean);
+
+    // 4. High-Visibility Safety Vest (center)
+    const viewerVest = avatar.customModelManager.instantiateSlotMesh("torso");
+    if (viewerVest) {
+      viewerVest.scale.setScalar(1.5);
+      viewerVest.position.set(0, -0.28, 0);
+      viewerVest.rotation.y = Math.PI * 0.08;
+      viewerMainGroup.add(viewerVest);
+      viewerPPEItems.vest = viewerVest;
+    }
+
+    // 5. Protective Gloves (bottom left & right)
+    const viewerGloveL = avatar.customModelManager.instantiateSlotMesh("gloves", { hand: "left" });
+    if (viewerGloveL) {
+      viewerGloveL.scale.setScalar(2.6);
+      viewerGloveL.position.set(-0.9, -0.68, 0);
+      viewerGloveL.rotation.y = Math.PI * 0.25;
+      viewerMainGroup.add(viewerGloveL);
+    }
+
+    const viewerGloveR = avatar.customModelManager.instantiateSlotMesh("gloves", { hand: "right" });
+    if (viewerGloveR) {
+      viewerGloveR.scale.setScalar(2.6);
+      viewerGloveR.position.set(0.9, -0.68, 0);
+      viewerGloveR.rotation.y = -Math.PI * 0.25;
+      viewerMainGroup.add(viewerGloveR);
+    }
+    viewerPPEItems.gloves = [viewerGloveL, viewerGloveR].filter(Boolean);
+
+    // Synchronize with current checklist selection state
+    equipmentItems.forEach((item) => {
+      const eqType = item.dataset.equipment;
+      if (eqType) {
+        const isPressed = item.getAttribute("aria-pressed") === "true";
+        setViewerPPEItemVisible(eqType, isPressed);
+      }
+    });
+  }
+
+  rebuildViewerAssembly();
   scene.add(viewerModel);
 
   modelStatus.textContent = "PPE GEAR ASSEMBLE";
@@ -2277,6 +2294,7 @@ function setupEquipmentCustomizer() {
     tab.addEventListener("click", () => {
       activeSlotId = tab.dataset.slot || "helmet";
       renderActiveSlot();
+      previewSlotInModelViewer(activeSlotId);
     });
   });
 
@@ -2300,13 +2318,9 @@ function setupEquipmentCustomizer() {
 
     try {
       await avatar.customModelManager.loadModelFromFile(activeSlotId, file);
-      const slot = avatar.customModelManager.getSlot(activeSlotId);
-      if (slot?.equipmentKey && !avatar.ppeVisibility[slot.equipmentKey]) {
-        const toggleBtn = document.querySelector(`[data-equipment="${slot.equipmentKey}"]`);
-        toggleBtn?.click();
-      }
       renderActiveSlot();
       previewSlotInModelViewer(activeSlotId);
+      const slot = avatar.customModelManager.getSlot(activeSlotId);
       setPoseStatus(`Uploaded custom 3D model "${file.name}" for ${slot?.name || activeSlotId}.`, "ready");
     } catch (err) {
       alert(`Could not load 3D model "${file.name}": ${err.message}`);
@@ -2357,6 +2371,8 @@ function setupEquipmentCustomizer() {
       if (maskDepthInput) maskDepthInput.value = Math.round((posZ - 0.120) / 0.0008);
       if (maskDepthValue) maskDepthValue.value = `${maskDepthInput.value} px`;
     }
+
+    previewSlotInModelViewer(activeSlotId);
   };
 
   [slotScale, slotPosX, slotPosY, slotPosZ, slotRotY].forEach((input) => {
@@ -2371,6 +2387,26 @@ function setupEquipmentCustomizer() {
     const mesh = avatar.customModelManager.instantiateSlotMesh(slotId);
     if (!mesh) return;
 
+    mesh.visible = true;
+    mesh.traverse((c) => {
+      c.visible = true;
+      if (c.isMesh) {
+        c.castShadow = true;
+        c.receiveShadow = true;
+      }
+      if (c.material) {
+        const mats = Array.isArray(c.material) ? childMatToArray(c.material) : [c.material];
+        mats.forEach((m) => {
+          if (m) {
+            m.colorWrite = true;
+            m.depthWrite = true;
+            m.depthTest = true;
+            m.needsUpdate = true;
+          }
+        });
+      }
+    });
+
     if (currentViewerSlotMesh && currentViewerSlotMesh.parent) {
       currentViewerSlotMesh.parent.remove(currentViewerSlotMesh);
       currentViewerSlotMesh = null;
@@ -2382,7 +2418,7 @@ function setupEquipmentCustomizer() {
 
     const box = new THREE.Box3().setFromObject(mesh);
     const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1.0;
+    const maxDim = Math.max(size.x, size.y, size.z) || 0.2;
     const center = box.getCenter(new THREE.Vector3());
 
     const previewContainer = new THREE.Group();
@@ -2391,6 +2427,10 @@ function setupEquipmentCustomizer() {
     previewContainer.add(mesh);
     previewContainer.scale.setScalar(2.0 / maxDim);
     previewContainer.position.set(0, 0, 0);
+
+    if (slotId === "back") {
+      previewContainer.rotation.y = Math.PI * 0.85;
+    }
 
     currentViewerSlotMesh = previewContainer;
     modelScene.add(previewContainer);
@@ -2411,6 +2451,10 @@ function setupEquipmentCustomizer() {
       const nameStr = activeEntry ? activeEntry.name : (slot.isCustom ? `Custom: ${slot.customFileName}` : "Built-in Model");
       modelTitle.textContent = `${slot.name} · ${nameStr}`;
     }
+  }
+
+  function childMatToArray(mat) {
+    return Array.isArray(mat) ? mat : [mat];
   }
 
   btnPreviewSlotModel?.addEventListener("click", () => {
@@ -2436,7 +2480,16 @@ function setupEquipmentCustomizer() {
     }
   });
 
+  avatar.customModelManager.onChange(() => {
+    renderActiveSlot();
+    const selectedCount = document.querySelectorAll(
+      '.equipment-item[aria-pressed="true"]',
+    ).length;
+    if (checkCount) checkCount.textContent = `${selectedCount} / ${equipmentItems.length}`;
+  });
+
   renderActiveSlot();
+  previewSlotInModelViewer(activeSlotId);
 }
 
 try {

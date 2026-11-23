@@ -18,17 +18,12 @@ Write-Host " Packaging AI Intelligent Safety Mirror Distribution     " -Foregrou
 Write-Host " Destination: $outputDirName                             " -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# Step 1: Verify / Rebuild Frontend
+# Step 1: Rebuild Frontend with Latest Source
 $frontendDist = Join-Path $scriptDir "frontend\dist"
-$indexHtml = Join-Path $frontendDist "index.html"
-if (!(Test-Path $indexHtml)) {
-    Write-Host "[1/4] Building production web assets..." -ForegroundColor Yellow
-    Push-Location (Join-Path $scriptDir "frontend")
-    npm run build
-    Pop-Location
-} else {
-    Write-Host "[1/4] Web assets verified in frontend\dist." -ForegroundColor Green
-}
+Write-Host "[1/4] Compiling latest production web assets (npm run build)..." -ForegroundColor Yellow
+Push-Location (Join-Path $scriptDir "frontend")
+npm run build
+Pop-Location
 
 # Step 2: Compile / Verify SafetyMirror.exe
 Write-Host "[2/4] Verifying and compiling SafetyMirror.exe..." -ForegroundColor Yellow
@@ -137,7 +132,8 @@ if ($Zip) {
     $zipPath = Join-Path $scriptDir "$outputDirName.zip"
     Write-Host "`nCreating ZIP archive: $zipPath..." -ForegroundColor Yellow
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path "$targetPackage\*" -DestinationPath $zipPath -CompressionLevel Optimal
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($targetPackage, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
     $zipMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
     Write-Host "ZIP archive created: $zipPath ($zipMB MB)" -ForegroundColor Green
 }

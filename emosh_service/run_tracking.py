@@ -24,7 +24,7 @@ from gpu_telemetry import get_gpu_info
 from model_validator import validate_assets
 from emosh_adapter import EMOSHOutputAdapter
 
-def run_pipeline(input_path, output_dir, visualize=False, head_only=False, device="cuda"):
+def run_pipeline(input_path, output_dir, visualize=False, head_only=False, device="cuda", mode="advanced"):
     start_time = time.time()
     input_path = Path(input_path)
     output_dir = Path(output_dir)
@@ -34,7 +34,7 @@ def run_pipeline(input_path, output_dir, visualize=False, head_only=False, devic
     print(f"EMOSH-Tracker 3D Human Body Reconstruction Engine")
     print(f"Input: {input_path}")
     print(f"Output: {output_dir}")
-    print(f"Visualize: {visualize} | Head-Only: {head_only}")
+    print(f"Mode: {mode} | Visualize: {visualize} | Head-Only: {head_only}")
     print(f"==================================================")
 
     # 1. GPU & Resource check
@@ -115,8 +115,9 @@ def run_pipeline(input_path, output_dir, visualize=False, head_only=False, devic
     duration = round(time.time() - start_time, 2)
 
     metadata = {
-        "version": "1.0",
+        "version": "2.0-advanced" if mode == "advanced" else "1.0",
         "engine": "EMOSH-Tracker",
+        "mode": mode,
         "input_file": str(input_path),
         "total_frames": total_frames,
         "fps": fps,
@@ -138,9 +139,9 @@ def run_pipeline(input_path, output_dir, visualize=False, head_only=False, devic
     print(f"[Pipeline] Generated optim_tracking.npy, id_share_params.npy, and metadata.json")
 
     # 5. Convert to Three.js-ready mesh sequence
-    print(f"[Adapter] Converting 3D human body mesh sequence for Three.js viewer...")
+    print(f"[Adapter] Converting 3D human body mesh sequence ({mode} mode) for Three.js viewer...")
     adapter = EMOSHOutputAdapter(output_dir)
-    mesh_seq = adapter.export_threejs_mesh_sequence()
+    mesh_seq = adapter.export_threejs_mesh_sequence(mode=mode)
     print(f"[Adapter] Exported mesh_sequence.json ({mesh_seq['totalFrames']} frames, {mesh_seq['vertexCount']} vertices, {mesh_seq['faceCount']} faces)")
 
     print(f"==================================================")
@@ -152,13 +153,14 @@ def main():
     parser = argparse.ArgumentParser(description="EMOSH-Tracker 3D Human Body Reconstruction")
     parser.add_argument("--input", required=True, help="Input video file path")
     parser.add_argument("--output", required=True, help="Output destination directory")
+    parser.add_argument("--mode", default="advanced", choices=["advanced", "simple"], help="Reconstruction mode (advanced SMPL-X or simple)")
     parser.add_argument("--visualize", action="store_true", help="Generate visualization overlays")
     parser.add_argument("--head-only", action="store_true", help="Optimize tracking for portrait / upper-body videos")
     parser.add_argument("--device", default="cuda", help="Execution device (cuda or cpu)")
     args = parser.parse_args()
 
     try:
-        run_pipeline(args.input, args.output, args.visualize, args.head_only, args.device)
+        run_pipeline(args.input, args.output, args.visualize, args.head_only, args.device, mode=args.mode)
     except Exception as e:
         print(f"[Error] EMOSH tracking failed: {e}", file=sys.stderr)
         sys.exit(1)

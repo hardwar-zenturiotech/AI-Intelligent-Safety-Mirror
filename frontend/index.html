@@ -123,21 +123,65 @@
                     <circle cx="12" cy="7" r="4"></circle>
                     <path d="M5.5 21v-2a6.5 6.5 0 0 1 13 0v2"></path>
                   </svg>
-                  <strong>EMOSH 3D Reconstruction (Engine D)</strong>
+                  <strong>EMOSH 3D Advanced Studio (Engine D)</strong>
                   <span class="scale-indicator" id="emoshStatusBadge">READY</span>
                 </div>
                 <div class="scale-quick-presets">
-                  <button type="button" class="preset-btn" id="btnEmoshSample" title="Load pre-computed 3D human body reconstruction">Load 3D Sample Mesh</button>
+                  <label class="inline-select" for="emoshModeSelect" style="margin: 0; font-size: 0.8rem;">
+                    <select id="emoshModeSelect" style="padding: 2px 6px; font-size: 0.75rem; border-radius: 4px; background: rgba(0,0,0,0.5); color: #00f0ff; border: 1px solid rgba(0,240,255,0.4);">
+                      <option value="advanced" selected>Advanced Mode (SMPL-X 55J)</option>
+                      <option value="simple">Simple Mode (Canonical)</option>
+                    </select>
+                  </label>
+                  <button type="button" class="preset-btn" id="btnEmoshSample" title="Load pre-computed 3D human body reconstruction">Load 3D Mesh</button>
                   <button type="button" class="preset-btn" id="btnEmoshReconstruct" title="Run EMOSH pipeline on last recorded session clip">Reconstruct Last Clip</button>
-                  <button type="button" class="preset-btn" id="btnEmoshWireframe">Wireframe</button>
+                  <label class="preset-btn" style="cursor: pointer; display: inline-flex; align-items: center; margin: 0;" title="Upload your own video (.mp4, .webm) to reconstruct">
+                    <span>Upload Video</span>
+                    <input type="file" id="inputEmoshVideo" accept="video/mp4,video/webm" style="display: none;" />
+                  </label>
                 </div>
               </div>
+
+              <!-- Shading Mode & Rig Controls -->
+              <div class="scale-control-header" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.1);">
+                <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+                  <span style="font-size: 0.75rem; color: #8ba2b5; margin-right: 4px;">Shading:</span>
+                  <button type="button" class="preset-btn active" id="btnShadingSolid" data-shading="solid">Solid PBR</button>
+                  <button type="button" class="preset-btn" id="btnShadingWireframe" data-shading="wireframe">Wireframe</button>
+                  <button type="button" class="preset-btn" id="btnShadingHeatmap" data-shading="heatmap">Confidence Heatmap</button>
+                  <button type="button" class="preset-btn" id="btnShadingXray" data-shading="xray">Holo X-Ray</button>
+                  <button type="button" class="preset-btn" id="btnEmoshJointRig" title="Toggle 55-Joint Kinematic Rig visualization">55-Joint Rig</button>
+                </div>
+              </div>
+
+              <!-- Real-time Body Shape Morphing (SMPL-X Betas) -->
+              <div class="emosh-shape-morphing" id="emoshShapeMorphing" style="margin-top: 6px; padding: 6px; background: rgba(0,0,0,0.25); border-radius: 6px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <span style="font-size: 0.75rem; font-weight: 600; color: #00f0ff;">SMPL-X Body Shape Morphing</span>
+                  <button type="button" class="preset-btn" id="btnResetBodyShape" style="font-size: 0.7rem; padding: 1px 6px;">Reset Shape</button>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+                  <label style="display: flex; flex-direction: column; font-size: 0.7rem; color: #a0b5c5;">
+                    <span>Chest Width: <output id="outChestWidth">0%</output></span>
+                    <input id="sliderChestWidth" type="range" min="-100" max="100" value="0" step="5" />
+                  </label>
+                  <label style="display: flex; flex-direction: column; font-size: 0.7rem; color: #a0b5c5;">
+                    <span>Stature: <output id="outStature">0%</output></span>
+                    <input id="sliderStature" type="range" min="-50" max="50" value="0" step="5" />
+                  </label>
+                  <label style="display: flex; flex-direction: column; font-size: 0.7rem; color: #a0b5c5;">
+                    <span>Thickness: <output id="outThickness">0%</output></span>
+                    <input id="sliderThickness" type="range" min="-50" max="50" value="0" step="5" />
+                  </label>
+                </div>
+              </div>
+
               <div class="emosh-playback-row" id="emoshPlaybackRow">
                 <button type="button" class="step-btn" id="btnEmoshPlay" title="Play / Pause EMOSH 3D motion playback">▶</button>
                 <input id="emoshTimeline" type="range" min="0" max="100" value="0" step="1" title="Scrub reconstruction frame" />
                 <span class="emosh-frame-counter" id="emoshFrameCounter">Frame: 0 / 0</span>
               </div>
-              <p class="emosh-telemetry" id="emoshTelemetryText">EMOSH GPU: Standby · 3D Body Surface Topology (SMPL-X compatible)</p>
+              <p class="emosh-telemetry" id="emoshTelemetryText">EMOSH GPU: Standby · Advanced SMPL-X Surface (55 Kinematic Joints & Confidence Heatmap)</p>
             </div>
 
             <!-- Prominent Live 3D Model Manual Scale Control -->

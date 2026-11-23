@@ -14,6 +14,8 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+import base64
+
 from gpu_telemetry import get_gpu_info
 from model_validator import validate_assets
 from run_tracking import run_pipeline
@@ -29,11 +31,12 @@ INPUTS_DIR.mkdir(parents=True, exist_ok=True)
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 
-def process_tracking_job(job_id, video_path, visualize, head_only, device):
+def process_tracking_job(job_id, video_path, visualize, head_only, device, mode="advanced"):
     job_output_dir = OUTPUTS_DIR / job_id
     with JOBS_LOCK:
         JOBS[job_id]["status"] = "processing"
         JOBS[job_id]["start_time"] = time.time()
+        JOBS[job_id]["mode"] = mode
 
     try:
         meta = run_pipeline(
@@ -42,6 +45,7 @@ def process_tracking_job(job_id, video_path, visualize, head_only, device):
             visualize=visualize,
             head_only=head_only,
             device=device,
+            mode=mode,
         )
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "completed"
@@ -152,11 +156,20 @@ class EMOSHRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(200, json.load(f))
             return
 
-        # 6. Sample Mesh Endpoint (instant demonstration from pre-computed sample run)
-        if path in ["/api/sample", "/api/sample/mesh"]:
-            sample_file = OUTPUTS_DIR / "sample_test" / "mesh_sequence.json"
-            if sample_file.exists():
-                with open(sample_file, "r", encoding="utf-8") as f:
+        # 6. Sample Mesh Endpoint (supports ?mode=advanced or ?mode=simple)
+        if path in ["/api/sample", "/api/sample/mesh", "/api/sample/advanced", "/api/sample/simple"]:
+            qs = parse_qs(parsed.query)
+            if path == "/api/sample/simple" or qs.get("mode", [""])[0] == "simple":
+                target_file = OUTPUTS_DIR / "sample_test" / "mesh_sequence_simple.json"
+                if not target_file.exists():
+                    target_file = OUTPUTS_DIR / "sample_test" / "mesh_sequence.json"
+            else: # advanced is default
+                target_file = OUTPUTS_DIR / "sample_test" / "mesh_sequence_advanced.json"
+                if not target_file.exists():
+                    target_file = OUTPUTS_DIR / "sample_test" / "mesh_sequence.json"
+
+            if target_file.exists():
+                with open(target_file, "r", encoding="utf-8") as f:
                     self.send_json(200, json.load(f))
                 return
             else:
@@ -179,6 +192,7 @@ class EMOSHRequestHandler(BaseHTTPRequestHandler):
                 data = {}
 
             video_path = data.get("video_path")
+            mode = data.get("mode", "advanced")
             visualize = data.get("visualize", True)
             head_only = data.get("head_only", False)
             device = data.get("device", "cuda")
@@ -202,22 +216,86 @@ class EMOSHRequestHandler(BaseHTTPRequestHandler):
                     "job_id": job_id,
                     "status": "queued",
                     "progress": 0,
+                    "mode": mode,
                     "input_file": str(video_path),
                     "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
 
             thread = threading.Thread(
                 target=process_tracking_job,
-                args=(job_id, video_path, visualize, head_only, device),
+                args=(job_id, video_path, visualize, head_only, device, mode),
                 daemon=True,
             )
             thread.start()
 
             self.send_json(202, {
-                "message": "EMOSH tracking job queued",
+                "message": f"EMOSH {mode} tracking job queued",
                 "job_id": job_id,
                 "status": "queued",
+                "mode": mode,
                 "input_file": str(video_path),
+            })
+            return
+
+        # Direct Video Upload and Track endpoint
+        if path == "/api/upload_and_track":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_length)
+
+            try:
+                data = json.loads(post_body.decode("utf-8")) if post_body else {}
+            except Exception as e:
+                self.send_json(400, {"error": f"Invalid JSON body: {str(e)}"})
+                return
+
+            filename = data.get("filename") or data.get("file_name") or f"upload_{int(time.time())}.mp4"
+            base64_data = data.get("video_base64") or data.get("data") or ""
+            mode = data.get("mode", "advanced")
+            visualize = data.get("visualize", True)
+            head_only = data.get("head_only", False)
+            device = data.get("device", "cuda")
+
+            if not base64_data:
+                self.send_json(400, {"error": "Missing video_base64 payload in request"})
+                return
+
+            # Strip data url prefix if present
+            if "," in base64_data:
+                base64_data = base64_data.split(",", 1)[1]
+
+            try:
+                raw_bytes = base64.b64decode(base64_data)
+                target_video_path = INPUTS_DIR / f"{uuid.uuid4().hex[:8]}_{filename}"
+                with open(target_video_path, "wb") as f:
+                    f.write(raw_bytes)
+            except Exception as e:
+                self.send_json(500, {"error": f"Failed to save uploaded video: {str(e)}"})
+                return
+
+            job_id = f"emosh_{uuid.uuid4().hex[:8]}"
+            with JOBS_LOCK:
+                JOBS[job_id] = {
+                    "job_id": job_id,
+                    "status": "queued",
+                    "progress": 0,
+                    "mode": mode,
+                    "input_file": str(target_video_path),
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+
+            thread = threading.Thread(
+                target=process_tracking_job,
+                args=(job_id, str(target_video_path), visualize, head_only, device, mode),
+                daemon=True,
+            )
+            thread.start()
+
+            self.send_json(202, {
+                "message": f"EMOSH {mode} video uploaded and queued for tracking",
+                "job_id": job_id,
+                "status": "queued",
+                "mode": mode,
+                "input_file": str(target_video_path),
             })
             return
 

@@ -100,7 +100,21 @@ assert(Array.isArray(frame0.joints.chest) && frame0.joints.chest.length === 3, "
 assert(Array.isArray(frame0.joints.leftHand) && frame0.joints.leftHand.length === 3, "Left hand anchor ($x,y,z$) present for gauntlet gloves.");
 assert(Array.isArray(frame0.joints.rightHand) && frame0.joints.rightHand.length === 3, "Right hand anchor ($x,y,z$) present for gauntlet gloves.");
 
-// 5. Verify Metadata Structure
+// 5. Verify Advanced Mode SMPL-X Features
+assert(sampleData.mode === "advanced", "Sample mesh is Advanced Mode SMPL-X Expressive Humanoid.");
+assert(sampleData.jointCount >= 55, `Advanced mesh contains ${sampleData.jointCount} joints (>= 55 SMPL-X kinematic rig).`);
+assert(Array.isArray(frame0.joints.jaw), "TEASER jaw articulation joint present.");
+assert(Array.isArray(frame0.joints.leftThumb1) && Array.isArray(frame0.joints.rightIndex1), "HaMeR finger digits present.");
+assert(Array.isArray(frame0.joints.pelvis), "Kinematic pelvis root joint present.");
+assert(Array.isArray(frame0.confidenceHeatmap) && frame0.confidenceHeatmap.length === sampleData.vertexCount, "Vertex confidence heatmap array present for SCBA fit analysis.");
+
+// 6. Verify Advanced and Simple dual-sample availability
+const advPath = resolve(__dirname, "public/models/emosh_sample_advanced.json");
+const simplePath = resolve(__dirname, "public/models/emosh_sample_simple.json");
+assert(existsSync(advPath), "Advanced SMPL-X sample mesh file exists.");
+assert(existsSync(simplePath), "Simple fallback sample mesh file exists.");
+
+// 7. Verify Metadata Structure
 const metaPath = resolve(__dirname, "../emosh_service/outputs/sample_test/metadata.json");
 if (existsSync(metaPath)) {
   const meta = JSON.parse(readFileSync(metaPath, "utf-8"));

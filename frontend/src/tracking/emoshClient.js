@@ -58,15 +58,15 @@ export class EMOSHClient {
   /**
    * Triggers an asynchronous EMOSH tracking run for a video file.
    */
-  async startTracking({ videoPath, visualize = true, headOnly = false } = {}) {
+  async startTracking({ videoPath, mode = "advanced", visualize = true, headOnly = false } = {}) {
     this.status = "processing";
-    this.notify({ type: "start", message: "Submitting video to EMOSH-Tracker pipeline..." });
+    this.notify({ type: "start", message: `Submitting video to EMOSH-Tracker (${mode} mode)...` });
 
     try {
       const resp = await fetch(`${this.serviceUrl}/api/track`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: json.stringify({ video_path: videoPath, visualize, head_only: headOnly }),
+        body: JSON.stringify({ video_path: videoPath, mode, visualize, head_only: headOnly }),
       });
 
       if (!resp.ok) {
@@ -76,13 +76,55 @@ export class EMOSHClient {
 
       const res = await resp.json();
       this.currentJobId = res.job_id;
-      this.notify({ type: "job_started", jobId: res.job_id });
+      this.notify({ type: "job_started", jobId: res.job_id, mode });
       return res.job_id;
     } catch (err) {
       this.status = "error";
       this.notify({ type: "error", error: err.message });
       throw err;
     }
+  }
+
+  /**
+   * Uploads a video file directly to the EMOSH service and begins tracking.
+   */
+  async uploadAndTrack(file, { mode = "advanced", visualize = true, headOnly = false, onProgress = null } = {}) {
+    this.status = "processing";
+    this.notify({ type: "uploading", message: `Uploading ${file.name} to EMOSH microservice...` });
+
+    // Read file as Base64
+    const base64Data = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const resp = await fetch(`${this.serviceUrl}/api/upload_and_track`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: file.name,
+        video_base64: base64Data,
+        mode,
+        visualize,
+        head_only: headOnly,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `Upload failed with HTTP ${resp.status}`);
+    }
+
+    const { job_id } = await resp.json();
+    this.currentJobId = job_id;
+    this.notify({ type: "job_started", jobId: job_id, mode });
+
+    // Poll until complete
+    const job = await this.pollJob(job_id, onProgress);
+    const meshSeq = await this.loadMeshSequence(job_id);
+    return { job, meshSeq };
   }
 
   /**
@@ -131,11 +173,11 @@ export class EMOSHClient {
 
   /**
    * Loads the pre-computed sample reconstruction.
-   * Tries local backend /api/sample, falling back to static /models/emosh_sample.json.
+   * Tries local backend /api/sample?mode=..., falling back to static /models/emosh_sample[_advanced].json.
    */
-  async loadSampleMesh() {
+  async loadSampleMesh(mode = "advanced") {
     try {
-      const resp = await fetch(`${this.serviceUrl}/api/sample`);
+      const resp = await fetch(`${this.serviceUrl}/api/sample?mode=${mode}`);
       if (resp.ok) {
         const data = await resp.json();
         this.status = "ready";
@@ -145,10 +187,22 @@ export class EMOSHClient {
       // Fall through to static asset
     }
 
-    const fallbackResp = await fetch("/models/emosh_sample.json");
-    if (!fallbackResp.ok) {
-      throw new Error("Could not load EMOSH sample mesh from service or static bundle.");
+    // Try mode-specific static file then default emosh_sample.json
+    const paths = mode === "advanced" 
+      ? ["/models/emosh_sample_advanced.json", "/models/emosh_sample.json"]
+      : ["/models/emosh_sample_simple.json", "/models/emosh_sample.json"];
+
+    for (const p of paths) {
+      try {
+        const fallbackResp = await fetch(p);
+        if (fallbackResp.ok) {
+          return await fallbackResp.json();
+        }
+      } catch (err) {
+        // try next
+      }
     }
-    return await fallbackResp.json();
+
+    throw new Error("Could not load EMOSH sample mesh from service or static bundle.");
   }
 }

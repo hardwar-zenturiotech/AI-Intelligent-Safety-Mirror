@@ -213,9 +213,22 @@ const overlayCalibration = { size: 0.82, offsetX: 0, offsetY: 0, depth: 0 };
 const visualModeSelect = document.querySelector("#visualModeSelect");
 const emoshControlBar = document.querySelector("#emoshControlBar");
 const emoshStatusBadge = document.querySelector("#emoshStatusBadge");
+const emoshModeSelect = document.querySelector("#emoshModeSelect");
 const btnEmoshSample = document.querySelector("#btnEmoshSample");
 const btnEmoshReconstruct = document.querySelector("#btnEmoshReconstruct");
-const btnEmoshWireframe = document.querySelector("#btnEmoshWireframe");
+const inputEmoshVideo = document.querySelector("#inputEmoshVideo");
+const btnShadingSolid = document.querySelector("#btnShadingSolid");
+const btnShadingWireframe = document.querySelector("#btnShadingWireframe");
+const btnShadingHeatmap = document.querySelector("#btnShadingHeatmap");
+const btnShadingXray = document.querySelector("#btnShadingXray");
+const btnEmoshJointRig = document.querySelector("#btnEmoshJointRig");
+const sliderChestWidth = document.querySelector("#sliderChestWidth");
+const sliderStature = document.querySelector("#sliderStature");
+const sliderThickness = document.querySelector("#sliderThickness");
+const outChestWidth = document.querySelector("#outChestWidth");
+const outStature = document.querySelector("#outStature");
+const outThickness = document.querySelector("#outThickness");
+const btnResetBodyShape = document.querySelector("#btnResetBodyShape");
 const btnEmoshPlay = document.querySelector("#btnEmoshPlay");
 const emoshTimeline = document.querySelector("#emoshTimeline");
 const emoshFrameCounter = document.querySelector("#emoshFrameCounter");
@@ -265,10 +278,11 @@ emoshClient.checkHealth().then((health) => {
   }
 });
 
-btnEmoshSample?.addEventListener("click", async () => {
+const loadEmoshMeshForMode = async () => {
   try {
+    const selectedMode = emoshModeSelect ? emoshModeSelect.value : "advanced";
     if (emoshStatusBadge) emoshStatusBadge.textContent = "LOADING...";
-    const seq = await emoshClient.loadSampleMesh();
+    const seq = await emoshClient.loadSampleMesh(selectedMode);
     avatar.bodyMeshViewer.loadSequence(seq);
     avatar.bodyMeshViewer.setVisible(true);
     if (emoshTimeline) {
@@ -277,23 +291,32 @@ btnEmoshSample?.addEventListener("click", async () => {
     }
     if (emoshStatusBadge) emoshStatusBadge.textContent = "PLAYING";
     if (btnEmoshPlay) btnEmoshPlay.textContent = "⏸";
-    if (diagEmoshStatus) diagEmoshStatus.textContent = `Active (${seq.totalFrames} frames)`;
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Active (${seq.totalFrames} frames - ${selectedMode})`;
     if (diagEmoshTime) diagEmoshTime.textContent = `${seq.duration}s`;
+    if (emoshTelemetryText) {
+      emoshTelemetryText.textContent = selectedMode === "advanced"
+        ? `EMOSH Advanced SMPL-X: ${seq.vertexCount} vertices, ${seq.jointCount || 55} kinematic joints, Confidence Heatmap active`
+        : `EMOSH Simple Mode: ${seq.vertexCount} vertices, Canonical mesh`;
+    }
     trackingManager.setMode(TRACKING_MODES.EMOSH);
     if (trackingEngine) trackingEngine.value = "emosh";
   } catch (err) {
     console.warn("Could not load EMOSH sample:", err);
     if (emoshStatusBadge) emoshStatusBadge.textContent = "ERR";
   }
-});
+};
+
+btnEmoshSample?.addEventListener("click", loadEmoshMeshForMode);
+emoshModeSelect?.addEventListener("change", loadEmoshMeshForMode);
 
 btnEmoshReconstruct?.addEventListener("click", async () => {
   try {
+    const selectedMode = emoshModeSelect ? emoshModeSelect.value : "advanced";
     if (emoshStatusBadge) emoshStatusBadge.textContent = "QUEUING...";
     if (diagEmoshStatus) diagEmoshStatus.textContent = "Queued";
-    const jobId = await emoshClient.startTracking();
+    const jobId = await emoshClient.startTracking({ mode: selectedMode });
     if (emoshStatusBadge) emoshStatusBadge.textContent = "RUNNING";
-    if (diagEmoshStatus) diagEmoshStatus.textContent = "Optimizing EHM...";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Optimizing (${selectedMode})...`;
     const job = await emoshClient.pollJob(jobId, (progressJob) => {
       if (diagEmoshStatus) diagEmoshStatus.textContent = `Proc: ${progressJob.status}`;
     });
@@ -318,6 +341,89 @@ btnEmoshReconstruct?.addEventListener("click", async () => {
   }
 });
 
+// Upload Video & Track
+inputEmoshVideo?.addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+
+  try {
+    const selectedMode = emoshModeSelect ? emoshModeSelect.value : "advanced";
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "UPLOADING...";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Uploading ${file.name}...`;
+
+    const { job, meshSeq } = await emoshClient.uploadAndTrack(file, {
+      mode: selectedMode,
+      onProgress: (p) => {
+        if (diagEmoshStatus) diagEmoshStatus.textContent = `Proc: ${p.status}`;
+      },
+    });
+
+    avatar.bodyMeshViewer.loadSequence(meshSeq);
+    avatar.bodyMeshViewer.setVisible(true);
+    if (emoshTimeline) {
+      emoshTimeline.max = meshSeq.totalFrames - 1;
+      emoshTimeline.value = 0;
+    }
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "COMPLETE";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Done (${meshSeq.totalFrames} frames)`;
+    if (diagEmoshTime && job.metadata) {
+      diagEmoshTime.textContent = `${job.metadata.processing_time_sec}s`;
+    }
+    trackingManager.setMode(TRACKING_MODES.EMOSH);
+    if (trackingEngine) trackingEngine.value = "emosh";
+  } catch (err) {
+    console.error("EMOSH video upload failed:", err);
+    if (emoshStatusBadge) emoshStatusBadge.textContent = "ERR";
+    if (diagEmoshStatus) diagEmoshStatus.textContent = `Error: ${err.message}`;
+  }
+});
+
+// Shading Mode buttons
+const shadingButtons = [btnShadingSolid, btnShadingWireframe, btnShadingHeatmap, btnShadingXray];
+shadingButtons.forEach((btn) => {
+  btn?.addEventListener("click", () => {
+    const mode = btn.dataset.shading;
+    avatar.bodyMeshViewer.setShadingMode(mode);
+    shadingButtons.forEach((b) => b?.classList.remove("active"));
+    btn.classList.add("active");
+  });
+});
+
+// 55-Joint Kinematic Rig Toggle
+btnEmoshJointRig?.addEventListener("click", () => {
+  const isVis = !avatar.bodyMeshViewer.jointsVisible;
+  avatar.bodyMeshViewer.setJointsVisible(isVis);
+  btnEmoshJointRig.classList.toggle("active", isVis);
+});
+
+// Real-time Body Shape Morphing Sliders
+const updateShapeMorphing = () => {
+  const chestVal = Number(sliderChestWidth?.value || 0) / 100;
+  const statureVal = Number(sliderStature?.value || 0) / 100;
+  const thickVal = Number(sliderThickness?.value || 0) / 100;
+
+  if (outChestWidth) outChestWidth.textContent = `${sliderChestWidth.value}%`;
+  if (outStature) outStature.textContent = `${sliderStature.value}%`;
+  if (outThickness) outThickness.textContent = `${sliderThickness.value}%`;
+
+  avatar.bodyMeshViewer.setBodyShape({
+    betaChest: chestVal,
+    betaStature: statureVal,
+    betaThick: thickVal,
+  });
+};
+
+sliderChestWidth?.addEventListener("input", updateShapeMorphing);
+sliderStature?.addEventListener("input", updateShapeMorphing);
+sliderThickness?.addEventListener("input", updateShapeMorphing);
+
+btnResetBodyShape?.addEventListener("click", () => {
+  if (sliderChestWidth) sliderChestWidth.value = "0";
+  if (sliderStature) sliderStature.value = "0";
+  if (sliderThickness) sliderThickness.value = "0";
+  updateShapeMorphing();
+});
+
 btnEmoshPlay?.addEventListener("click", () => {
   if (avatar.bodyMeshViewer.isPlaying) {
     avatar.bodyMeshViewer.pause();
@@ -336,12 +442,6 @@ emoshTimeline?.addEventListener("input", (e) => {
   if (emoshFrameCounter && avatar.bodyMeshViewer.meshSequence) {
     emoshFrameCounter.textContent = `Frame: ${frameIdx} / ${avatar.bodyMeshViewer.meshSequence.totalFrames}`;
   }
-});
-
-btnEmoshWireframe?.addEventListener("click", () => {
-  const isWire = !avatar.bodyMeshViewer.wireframeMesh.visible;
-  avatar.bodyMeshViewer.setWireframe(isWire);
-  btnEmoshWireframe.classList.toggle("active", isWire);
 });
 
 visualModeSelect?.addEventListener("change", (e) => {

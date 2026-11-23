@@ -28,31 +28,64 @@ export class BodyMeshViewer {
     this.lastFrameTime = 0;
     this.visible = false;
     this.group.visible = false;
+    this.shadingMode = "solid"; // "solid" | "wireframe" | "heatmap" | "xray"
+
+    // Body shape morphing parameters (SMPL-X betas)
+    this.shapeParams = {
+      betaChest: 0.0,
+      betaStature: 0.0,
+      betaThick: 0.0,
+    };
 
     // Body surface mesh
     this.geometry = new THREE.BufferGeometry();
-    this.material = new THREE.MeshStandardMaterial({
-      color: 0x4a7c91,
-      roughness: 0.45,
-      metalness: 0.15,
+    this.solidMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3d7088,
+      roughness: 0.38,
+      metalness: 0.20,
       side: THREE.DoubleSide,
       wireframe: false,
     });
+    this.heatmapMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.35,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    this.xrayMaterial = new THREE.MeshStandardMaterial({
+      color: 0x00e5ff,
+      roughness: 0.2,
+      metalness: 0.5,
+      transparent: true,
+      opacity: 0.40,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    this.material = this.solidMaterial;
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
     this.group.add(this.mesh);
 
-    // Optional wireframe overlay
+    // Wireframe overlay
     this.wireframeMaterial = new THREE.MeshBasicMaterial({
       color: 0x00f0ff,
       wireframe: true,
       transparent: true,
-      opacity: 0.25,
+      opacity: 0.45,
     });
     this.wireframeMesh = new THREE.Mesh(this.geometry, this.wireframeMaterial);
     this.wireframeMesh.visible = false;
     this.group.add(this.wireframeMesh);
+
+    // 55-Joint Kinematic Rig Visualizer
+    this.jointsVisible = false;
+    this.jointRigGroup = new THREE.Group();
+    this.jointRigGroup.visible = false;
+    this.group.add(this.jointRigGroup);
+    this.jointSpheres = new Map();
+    this.boneLines = null;
 
     // Virtual SCBA PPE equipment attachments for EMOSH mesh
     this.ppeGroup = new THREE.Group();
@@ -212,8 +245,14 @@ export class BodyMeshViewer {
 
     if (posAttr && frame.vertices) {
       const posArray = posAttr.array;
-      for (let i = 0; i < frame.vertices.length; i++) {
-        posArray[i] = frame.vertices[i];
+      const sx = 1.0 + (this.shapeParams.betaChest || 0.0) * 0.15;
+      const sy = 1.0 + (this.shapeParams.betaStature || 0.0) * 0.12;
+      const sz = 1.0 + (this.shapeParams.betaThick || 0.0) * 0.15;
+
+      for (let i = 0; i < frame.vertices.length; i += 3) {
+        posArray[i] = frame.vertices[i] * sx;
+        posArray[i + 1] = frame.vertices[i + 1] * sy;
+        posArray[i + 2] = frame.vertices[i + 2] * sz;
       }
       posAttr.needsUpdate = true;
     }
@@ -226,9 +265,32 @@ export class BodyMeshViewer {
       normAttr.needsUpdate = true;
     }
 
+    // Update confidence heatmap vertex colors
+    if (frame.confidenceHeatmap && frame.confidenceHeatmap.length > 0) {
+      let colorAttr = this.geometry.attributes.color;
+      if (!colorAttr || colorAttr.count !== frame.confidenceHeatmap.length) {
+        colorAttr = new THREE.BufferAttribute(new Float32Array(frame.confidenceHeatmap.length * 3), 3);
+        this.geometry.setAttribute("color", colorAttr);
+      }
+      const colors = colorAttr.array;
+      for (let i = 0; i < frame.confidenceHeatmap.length; i++) {
+        const conf = frame.confidenceHeatmap[i];
+        const t = Math.max(0, Math.min(1, (conf - 0.88) / 0.12));
+        colors[i * 3 + 0] = t < 0.5 ? 0.2 + (0.5 - t) * 1.5 : 0.08;
+        colors[i * 3 + 1] = t < 0.5 ? 0.4 + t * 1.2 : 0.95;
+        colors[i * 3 + 2] = t < 0.5 ? 0.95 : 0.2 + (1.0 - t) * 0.8;
+      }
+      colorAttr.needsUpdate = true;
+    }
+
     // Attach virtual SCBA safety equipment to EMOSH anatomical landmarks
     const joints = frame.joints;
     if (joints) {
+      // Update 55-Joint Kinematic Rig if visible
+      if (this.jointsVisible) {
+        this.updateJointRig(joints);
+      }
+
       // 1. Helmet: anchored to head center
       if (joints.head && this.helmet) {
         this.helmet.position.set(joints.head[0], joints.head[1] + 0.05, joints.head[2] + 0.01);
@@ -329,10 +391,86 @@ export class BodyMeshViewer {
     this.wireframeMesh.visible = wireframe;
   }
 
+  setShadingMode(mode) {
+    this.shadingMode = mode;
+    if (mode === "solid") {
+      this.mesh.visible = true;
+      this.mesh.material = this.solidMaterial;
+      this.wireframeMesh.visible = false;
+    } else if (mode === "wireframe") {
+      this.mesh.visible = false;
+      this.wireframeMesh.visible = true;
+      this.wireframeMesh.material.opacity = 0.85;
+    } else if (mode === "heatmap") {
+      this.mesh.visible = true;
+      this.mesh.material = this.heatmapMaterial;
+      this.wireframeMesh.visible = false;
+    } else if (mode === "xray") {
+      this.mesh.visible = true;
+      this.mesh.material = this.xrayMaterial;
+      this.wireframeMesh.visible = true;
+      this.wireframeMesh.material.opacity = 0.35;
+    }
+  }
+
+  setJointsVisible(visible) {
+    this.jointsVisible = visible;
+    this.jointRigGroup.visible = visible;
+    if (visible && this.meshSequence && this.meshSequence.frames[this.currentFrame]) {
+      this.updateJointRig(this.meshSequence.frames[this.currentFrame].joints);
+    }
+  }
+
+  setBodyShape({ betaChest = null, betaStature = null, betaThick = null } = {}) {
+    if (betaChest !== null) this.shapeParams.betaChest = betaChest;
+    if (betaStature !== null) this.shapeParams.betaStature = betaStature;
+    if (betaThick !== null) this.shapeParams.betaThick = betaThick;
+    if (this.meshSequence) {
+      this.applyFrame(this.currentFrame);
+    }
+  }
+
+  updateJointRig(joints) {
+    if (!joints) return;
+
+    // Joint sphere geometry and materials
+    if (!this._jointSphereGeo) {
+      this._jointSphereGeo = new THREE.SphereGeometry(0.015, 8, 8);
+      this._jointMatCore = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
+      this._jointMatFinger = new THREE.MeshBasicMaterial({ color: 0xffd700 });
+      this._jointMatFace = new THREE.MeshBasicMaterial({ color: 0xff0077 });
+    }
+
+    for (const [name, pos] of Object.entries(joints)) {
+      if (!Array.isArray(pos) || pos.length < 3) continue;
+
+      let sphere = this.jointSpheres.get(name);
+      if (!sphere) {
+        let mat = this._jointMatCore;
+        if (name.includes("Thumb") || name.includes("Index") || name.includes("Middle") || name.includes("Ring") || name.includes("Pinky")) {
+          mat = this._jointMatFinger;
+        } else if (name === "jaw" || name.includes("Eye")) {
+          mat = this._jointMatFace;
+        }
+        sphere = new THREE.Mesh(this._jointSphereGeo, mat);
+        sphere.name = `Joint_${name}`;
+        this.jointRigGroup.add(sphere);
+        this.jointSpheres.set(name, sphere);
+      }
+      sphere.position.set(pos[0], pos[1], pos[2]);
+    }
+  }
+
   dispose() {
     this.geometry.dispose();
-    this.material.dispose();
+    this.solidMaterial.dispose();
+    this.heatmapMaterial.dispose();
+    this.xrayMaterial.dispose();
     this.wireframeMaterial.dispose();
+    if (this._jointSphereGeo) this._jointSphereGeo.dispose();
+    if (this._jointMatCore) this._jointMatCore.dispose();
+    if (this._jointMatFinger) this._jointMatFinger.dispose();
+    if (this._jointMatFace) this._jointMatFace.dispose();
     this.scene.remove(this.group);
   }
 }

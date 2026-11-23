@@ -559,6 +559,13 @@ export class Avatar {
 
     this.bodyMeshViewer?.setPPEVisible(type, isVis);
 
+    if (this.model) {
+      this.model.updateMatrixWorld(true);
+    }
+    if (this.group) {
+      this.group.updateMatrixWorld(true);
+    }
+
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera);
     }
@@ -648,6 +655,9 @@ export class Avatar {
       if (this.scbaMask) {
         activateItem(this.scbaMask, Boolean(this.ppeVisibility.respirator));
         headBone.add(this.scbaMask);
+        if (this.maskCalibration) {
+          this.setMaskCalibration(this.maskCalibration);
+        }
       }
     } else if (slotId === "torso" && chestBone) {
       safeRemove(this.ppeVest, "torso", chestBone);
@@ -687,6 +697,13 @@ export class Avatar {
           rightHandBone.add(this.ppeGloveR);
         }
       }
+    }
+
+    if (this.model) {
+      this.model.updateMatrixWorld(true);
+    }
+    if (this.group) {
+      this.group.updateMatrixWorld(true);
     }
 
     if (this.renderer && this.scene && this.camera) {
@@ -806,17 +823,31 @@ export class Avatar {
 
   setMaskCalibration({ size = 1.0, offsetX = 0, offsetY = 0, depth = 0 } = {}) {
     this.maskCalibration = { size, offsetX, offsetY, depth };
+    const pxToMeters = 0.0008;
+    const baseScale = 0.87;
+    const effectiveScale = baseScale * size;
+    const posX = offsetX * pxToMeters;
+    const posY = -0.018 - offsetY * pxToMeters;
+    const posZ = 0.120 + depth * pxToMeters;
+
     if (this.scbaMask) {
-      const baseScale = 0.87;
-      const effectiveScale = baseScale * size;
       this.scbaMask.scale.setScalar(effectiveScale);
-      // In headBone local space: convert pixel sliders to meters
-      const pxToMeters = 0.0008;
-      this.scbaMask.position.set(
-        offsetX * pxToMeters,
-        -0.018 - offsetY * pxToMeters,
-        0.120 + depth * pxToMeters,
-      );
+      this.scbaMask.position.set(posX, posY, posZ);
+      this.scbaMask.updateMatrix();
+    }
+
+    if (this.customModelManager) {
+      const respSlot = this.customModelManager.getSlot("respirator");
+      if (respSlot && respSlot.transform) {
+        respSlot.transform.scale = effectiveScale;
+        respSlot.transform.posX = posX;
+        respSlot.transform.posY = posY;
+        respSlot.transform.posZ = posZ;
+      }
+    }
+
+    if (this.model) {
+      this.model.updateMatrixWorld(true);
     }
   }
 

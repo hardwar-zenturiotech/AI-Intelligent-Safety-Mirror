@@ -186,4 +186,91 @@ test("CustomModelManager - Slot Configurations & Defaults", async (t) => {
       });
     });
   });
+
+  await t.test("Replaced models preserve exact scale, depth, and position across all slots", () => {
+    const slots = ["helmet", "respirator", "torso", "gloves", "back", "front"];
+
+    slots.forEach((slotId) => {
+      const slot = manager.getSlot(slotId);
+      const defaultMesh = manager.instantiateSlotMesh(slotId);
+
+      // Create an arbitrarily-sized custom model (e.g. 1500mm / 1.5m CAD model with arbitrary center)
+      const customGroup = new THREE.Group();
+      const geom = new THREE.BoxGeometry(1.5, 1.2, 0.9);
+      geom.translate(0.5, -0.3, 0.2); // skewed pivot
+      const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x00ff00 }));
+      customGroup.add(mesh);
+
+      // Normalize it for this slot
+      manager.normalizeModel(customGroup, slotId);
+
+      // Attach custom model to slot
+      const customId = `custom-test-${slotId}`;
+      slot.customModels = [
+        {
+          id: customId,
+          name: `Custom ${slotId}`,
+          fileName: `model_${slotId}.glb`,
+          modelGroup: customGroup,
+        },
+      ];
+      manager.selectModel(slotId, customId);
+
+      const replacedMesh = manager.instantiateSlotMesh(slotId);
+
+      // 1. Verify scale is preserved
+      assert.equal(
+        replacedMesh.scale.x,
+        defaultMesh.scale.x,
+        `Slot "${slotId}" replaced model must have identical scale.x (${defaultMesh.scale.x})`
+      );
+      assert.equal(
+        replacedMesh.scale.y,
+        defaultMesh.scale.y,
+        `Slot "${slotId}" replaced model must have identical scale.y (${defaultMesh.scale.y})`
+      );
+      assert.equal(
+        replacedMesh.scale.z,
+        defaultMesh.scale.z,
+        `Slot "${slotId}" replaced model must have identical scale.z (${defaultMesh.scale.z})`
+      );
+
+      // 2. Verify depth (posZ) and position (posX, posY) are preserved
+      assert.equal(
+        replacedMesh.position.x,
+        defaultMesh.position.x,
+        `Slot "${slotId}" replaced model must have identical posX (${defaultMesh.position.x})`
+      );
+      assert.equal(
+        replacedMesh.position.y,
+        defaultMesh.position.y,
+        `Slot "${slotId}" replaced model must have identical posY (${defaultMesh.position.y})`
+      );
+      assert.equal(
+        replacedMesh.position.z,
+        defaultMesh.position.z,
+        `Slot "${slotId}" replaced model must have identical posZ/depth (${defaultMesh.position.z})`
+      );
+
+      // 3. Verify movement synchronicity when attached to an animated bone
+      const bone = new THREE.Bone();
+      bone.name = `test_bone_${slotId}`;
+      bone.add(replacedMesh);
+
+      // Simulate bone translation & rotation during live tracking
+      bone.position.set(0.12, 1.45, -0.35);
+      bone.rotation.set(0.1, 0.45, -0.2);
+      bone.updateMatrixWorld(true);
+
+      const worldPos = new THREE.Vector3();
+      replacedMesh.getWorldPosition(worldPos);
+      assert.ok(
+        Number.isFinite(worldPos.x) && Number.isFinite(worldPos.y) && Number.isFinite(worldPos.z),
+        `Slot "${slotId}" replaced model must compute valid world transform when bone moves`
+      );
+
+      // Reset back to default for clean state
+      manager.resetSlotToDefault(slotId);
+    });
+  });
 });

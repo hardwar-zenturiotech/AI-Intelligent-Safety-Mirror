@@ -200,6 +200,38 @@ export const DEFAULT_SLOT_CONFIGS = {
 };
 
 /**
+ * Reference anatomical dimensions (in meters) and local anchor offsets measured from
+ * the default procedural PPE equipment. All custom uploaded models are normalized against
+ * these specs to preserve exact scale, depth, and body-attachment alignment.
+ */
+export const SLOT_REFERENCE_SPECS = {
+  helmet: {
+    targetDim: 0.3574,
+    centerOffset: new THREE.Vector3(0.0, 0.0105, 0.0218),
+  },
+  respirator: {
+    targetDim: 0.2733,
+    centerOffset: new THREE.Vector3(0.0, 0.0169, 0.0291),
+  },
+  torso: {
+    targetDim: 0.4180,
+    centerOffset: new THREE.Vector3(0.0, 0.0030, 0.0070),
+  },
+  gloves: {
+    targetDim: 0.1533,
+    centerOffset: new THREE.Vector3(-0.0087, 0.0396, 0.0),
+  },
+  back: {
+    targetDim: 0.5746,
+    centerOffset: new THREE.Vector3(0.0, 0.0303, 0.0032),
+  },
+  front: {
+    targetDim: 0.1000,
+    centerOffset: new THREE.Vector3(0.0, 0.0040, 0.0010),
+  },
+};
+
+/**
  * Manages custom user-uploaded 3D models and calibrations for each PPE slot.
  */
 export class CustomModelManager {
@@ -374,18 +406,11 @@ export class CustomModelManager {
   }
 
   /**
-   * Normalizes the size and centers an imported 3D model around its anchor.
+   * Normalizes the size and centers an imported 3D model around its anchor,
+   * aligning scale, depth, and positioning with the slot's reference model.
    */
   normalizeModel(modelGroup, slotId = "helmet") {
-    const SLOT_TARGET_SIZES = {
-      helmet: 0.28,     // ~28 cm
-      respirator: 0.24, // ~24 cm
-      torso: 0.48,      // ~48 cm
-      gloves: 0.26,     // ~26 cm
-      back: 0.52,       // ~52 cm
-      front: 0.14,      // ~14 cm
-    };
-    const targetSize = SLOT_TARGET_SIZES[slotId] || 0.28;
+    const spec = SLOT_REFERENCE_SPECS[slotId] || SLOT_REFERENCE_SPECS.helmet;
 
     // Traverse to ensure shadows, material visibility, and proper depth testing
     modelGroup.traverse((child) => {
@@ -414,11 +439,13 @@ export class CustomModelManager {
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
 
-    // Convert standard units:
+    if (maxDim <= 0.0001) return;
+
+    // Convert standard units if imported model is not in meters:
     if (maxDim > 50.0) {
       // Millimeters (e.g. 280 mm) -> meters
       modelGroup.scale.multiplyScalar(0.001);
-    } else if (maxDim > 1.2) {
+    } else if (maxDim > 2.5) {
       // Centimeters (e.g. 28 cm) -> meters
       modelGroup.scale.multiplyScalar(0.01);
     }
@@ -426,17 +453,23 @@ export class CustomModelManager {
     // Recompute box after unit scaling
     const box2 = new THREE.Box3().setFromObject(modelGroup);
     const size2 = box2.getSize(new THREE.Vector3());
-    const maxDim2 = Math.max(size2.x, size2.y, size2.z);
+    const currentDim = Math.max(size2.x, size2.y, size2.z);
 
-    // If still significantly outside anatomical proportions, calibrate to target size
-    if (maxDim2 > 1.1 || (maxDim2 < 0.08 && maxDim2 > 0)) {
-      modelGroup.scale.multiplyScalar(targetSize / maxDim2);
+    // Strictly scale model to match anatomical reference dimensions of the default equipment
+    if (currentDim > 0 && spec.targetDim > 0) {
+      const scaleFactor = spec.targetDim / currentDim;
+      modelGroup.scale.multiplyScalar(scaleFactor);
     }
 
-    // Recompute box after auto-scale and center geometry
+    // Recompute box after reference scaling and center geometry to reference anchor offset
     const updatedBox = new THREE.Box3().setFromObject(modelGroup);
     const center = updatedBox.getCenter(new THREE.Vector3());
     modelGroup.position.sub(center);
+    if (spec.centerOffset) {
+      modelGroup.position.add(spec.centerOffset);
+    }
+
+    modelGroup.updateMatrix();
   }
 
   /**
@@ -508,6 +541,8 @@ export class CustomModelManager {
     }
 
     this.applySlotTransformToGroup(wrapper, slot.transform, options);
+    wrapper.updateMatrix();
+    wrapper.updateMatrixWorld(true);
     return wrapper;
   }
 

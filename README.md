@@ -49,8 +49,8 @@ Place the SCBA mask FBX at:
 
 The application can be launched directly as a native Windows desktop software without manually opening terminals or browser tabs:
 
-1. **Launch Directly**: Double-click [`SafetyMirror.exe`](file:///c:/Users/nihal/Desktop/Zenturiotech/AI-Intelligent-Safety-Mirror/AI-Intelligent-Safety-Mirror/SafetyMirror.exe) or [`Start-Safety-Mirror.bat`](file:///c:/Users/nihal/Desktop/Zenturiotech/AI-Intelligent-Safety-Mirror/AI-Intelligent-Safety-Mirror/Start-Safety-Mirror.bat).
-2. **Install Desktop Shortcut**: Double-click [`CreateDesktopShortcut.bat`](file:///c:/Users/nihal/Desktop/Zenturiotech/AI-Intelligent-Safety-Mirror/AI-Intelligent-Safety-Mirror/CreateDesktopShortcut.bat) to place a branded shortcut on your Windows desktop.
+1. **Launch Directly**: Double-click [`SafetyMirror.exe`](SafetyMirror.exe) or [`Start-Safety-Mirror.bat`](Start-Safety-Mirror.bat).
+2. **Install Desktop Shortcut**: Double-click [`CreateDesktopShortcut.bat`](CreateDesktopShortcut.bat) to place a shortcut on your Windows desktop.
 3. **Rebuild Executable**: Run `powershell -File build_executable.ps1` or `npm run build:exe`.
 
 ### Executable Architecture & Capabilities

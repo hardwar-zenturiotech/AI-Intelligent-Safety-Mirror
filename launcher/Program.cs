@@ -10,7 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace Zenturio.SafetyMirror
+namespace SafetyMirror
 {
     public static class Program
     {
@@ -71,13 +71,13 @@ namespace Zenturio.SafetyMirror
                 {
                     verboseLogging = true;
                     AllocConsole();
-                    Console.Title = "Zenturio Safety Mirror - System Console";
+                    Console.Title = "AI Safety Mirror - System Console";
                     break;
                 }
             }
 
             Log("=========================================================");
-            Log("  ZENTURIO AI INTELLIGENT SAFETY MIRROR DESKTOP RUNNER   ");
+            Log("     AI INTELLIGENT SAFETY MIRROR DESKTOP RUNNER         ");
             Log("=========================================================");
 
             baseDirectory = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\', '/');
@@ -134,7 +134,7 @@ namespace Zenturio.SafetyMirror
                 MessageBox.Show(
                     "Production assets not found at:\n" + distDirectory + "\n\n" +
                     "Please run 'npm run build' inside the frontend directory before running the desktop application.",
-                    "Zenturio Safety Mirror - Build Required",
+                    "AI Safety Mirror - Build Required",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 1;
@@ -156,7 +156,7 @@ namespace Zenturio.SafetyMirror
                 MessageBox.Show(
                     "Unable to start local web server on port " + serverPort + ".\n" +
                     "Please ensure no other application is blocking local network ports.",
-                    "Zenturio Safety Mirror - Port Conflict",
+                    "AI Safety Mirror - Port Conflict",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 2;
@@ -185,7 +185,7 @@ namespace Zenturio.SafetyMirror
                 MessageBox.Show(
                     "Google Chrome or Microsoft Edge was not found on your system.\n\n" +
                     "Please install Google Chrome or Microsoft Edge to run the AI Intelligent Safety Mirror.",
-                    "Zenturio Safety Mirror - Browser Required",
+                    "AI Safety Mirror - Browser Required",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
 
@@ -199,7 +199,7 @@ namespace Zenturio.SafetyMirror
             // Prepare isolated user profile directory
             string profileDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ZenturioSafetyMirror",
+                "SafetyMirrorApp",
                 "Profile");
 
             try
@@ -255,7 +255,7 @@ namespace Zenturio.SafetyMirror
             {
                 MessageBox.Show(
                     "Error launching desktop application:\n" + ex.Message,
-                    "Zenturio Safety Mirror - Launch Error",
+                    "AI Safety Mirror - Launch Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 StopAll();
@@ -360,7 +360,7 @@ namespace Zenturio.SafetyMirror
                 if (cleanPath.Equals("api/server-health", StringComparison.OrdinalIgnoreCase))
                 {
                     byte[] data = Encoding.UTF8.GetBytes(string.Format(
-                        "{{\"status\":\"ok\",\"app\":\"Zenturio AI Intelligent Safety Mirror\",\"port\":{0}}}",
+                        "{{\"status\":\"ok\",\"app\":\"AI Intelligent Safety Mirror\",\"port\":{0}}}",
                         serverPort));
                     response.ContentType = "application/json; charset=utf-8";
                     response.StatusCode = 200;

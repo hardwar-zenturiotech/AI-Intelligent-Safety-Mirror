@@ -7,21 +7,23 @@
       name="description"
       content="AI Intelligent Safety Mirror with browser-based face tracking and PPE visualization."
     />
-    <title>Safety Mirror | Zenturio</title>
+    <title>AI Intelligent Safety Mirror</title>
     <link rel="stylesheet" href="./style.css" />
     <script type="module" src="./main.js"></script>
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="#" aria-label="Zenturio Safety Mirror home">
-          <span class="brand-mark" aria-hidden="true">Z</span>
+        <a class="brand" href="#" aria-label="AI Safety Mirror home">
+          <span class="brand-mark" aria-hidden="true">SM</span>
           <span class="brand-copy">
-            <strong>ZENTURIO</strong>
-            <span>INTELLIGENT SAFETY</span>
+            <strong>SAFETY MIRROR</strong>
+            <span>AI PPE VERIFICATION</span>
           </span>
         </a>
         <div class="topbar-meta">
+          <span class="session-badge" id="sessionBadge"><span></span> READY TO BEGIN</span>
+          <span class="topbar-divider" aria-hidden="true"></span>
           <span class="system-indicator"><span></span> SYSTEM READY</span>
           <span class="topbar-divider" aria-hidden="true"></span>
           <span class="topbar-date" id="currentDate"></span>
@@ -29,28 +31,39 @@
       </header>
 
       <main class="main-content">
-        <section class="page-heading" aria-labelledby="pageTitle">
-          <div>
-            <p class="eyebrow">PERSONAL PROTECTIVE EQUIPMENT</p>
-            <h1 id="pageTitle">Safety mirror</h1>
-            <p class="page-description">
-              A browser-based safety mirror with face tracking and 3D PPE visualization.
-            </p>
-          </div>
-          <span class="session-badge"><span></span> READY TO BEGIN</span>
-        </section>
-
         <div class="workspace">
+          <!-- Left Column: Camera Stage, Tracking Engine Studio & Calibration -->
           <section class="preview-panel panel" aria-labelledby="previewTitle">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">CAMERA FEED</p>
-                <h2 id="previewTitle">Live preview</h2>
+                <p class="eyebrow">LIVE CAMERA FEED</p>
+                <h2 id="previewTitle">Safety Mirror Viewport</h2>
               </div>
-              <span class="feed-status" id="feedStatus">
-                <span></span>
-                CAMERA OFF
-              </span>
+              <div class="panel-heading-actions">
+                <span class="feed-status" id="feedStatus">
+                  <span></span>
+                  CAMERA OFF
+                </span>
+                <button class="camera-button" id="cameraToggle" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <rect x="2.5" y="5" width="11" height="10" rx="2"></rect>
+                    <path d="m13.5 8 4-2v8l-4-2"></path>
+                  </svg>
+                  <span>Start camera</span>
+                </button>
+                <button class="record-button" id="recordToggle" type="button" disabled>
+                  Record clip
+                </button>
+              </div>
+            </div>
+
+            <div class="preview-messages-bar">
+              <p id="cameraMessage" role="status" aria-live="polite">
+                Camera and pose tracking run locally in this browser.
+              </p>
+              <p id="recordingMessage" role="status" aria-live="polite">
+                Start camera to record session video to recordings/.
+              </p>
             </div>
 
             <div class="camera-stage" id="cameraStage">
@@ -74,46 +87,47 @@
                   </svg>
                 </div>
                 <h3>Camera preview is off</h3>
-                <p>Start your camera to see the live preview here.</p>
+                <p>Start your camera to begin live PPE verification.</p>
               </div>
               <span class="preview-caption">LOCAL CAMERA PREVIEW</span>
             </div>
 
-            <label class="mode-control" for="trackingEngine">
-              <span>Pose tracking &amp; reconstruction engine</span>
-              <select id="trackingEngine">
-                <option value="mediapipe" selected>Engine A: MediaPipe 3D Pose (Fast Live - Recommended)</option>
-                <option value="rtmw3d">Engine B: RTMW3D (SimCC-3D Joints)</option>
-                <option value="bodypix">Engine C: TensorFlow BodyPix (24-Part Segmentation)</option>
-                <option value="emosh">Engine D: EMOSH-Tracker (Full 3D Body Mesh Reconstruction)</option>
-                <option value="mediapipe+bodypix">MediaPipe + BodyPix (Pose + 24-Part Segmentation)</option>
-                <option value="rtmw3d+bodypix">RTMW3D + BodyPix (3D Joints + Segmentation)</option>
-                <option value="combined">Combined Multi-Engine Mode</option>
-                <option value="rtmpose3d">RTMPose 3D (SimCC-3D)</option>
-                <option value="rtmpose">RTMPose 2D</option>
-              </select>
-            </label>
+            <!-- Sleek 3-Column Desktop Command Bar -->
+            <div class="mode-controls-bar">
+              <label class="mode-control" for="trackingEngine">
+                <span>Tracking Engine</span>
+                <select id="trackingEngine">
+                  <option value="mediapipe" selected>Engine A: MediaPipe 3D Pose</option>
+                  <option value="rtmw3d">Engine B: RTMW3D (SimCC-3D)</option>
+                  <option value="bodypix">Engine C: BodyPix (24-Part)</option>
+                  <option value="emosh">Engine D: EMOSH-Tracker (3D Body Mesh)</option>
+                  <option value="mediapipe+bodypix">MediaPipe + BodyPix (Dual Engine)</option>
+                  <option value="rtmw3d+bodypix">RTMW3D + BodyPix (3D Joints + Seg)</option>
+                  <option value="combined">Combined Multi-Engine Mode</option>
+                </select>
+              </label>
 
-            <label class="mode-control" for="visualModeSelect">
-              <span>Visual debugging mode</span>
-              <select id="visualModeSelect">
-                <option value="6" selected>Mode 6: Combined View (Multi-layer)</option>
-                <option value="1">Mode 1: Camera Only</option>
-                <option value="2">Mode 2: MediaPipe Skeleton</option>
-                <option value="3">Mode 3: RTMW3D 3D Skeleton</option>
-                <option value="4">Mode 4: BodyPix 24-Part Segmentation</option>
-                <option value="5">Mode 5: EMOSH 3D Body Mesh Reconstruction</option>
-              </select>
-            </label>
+              <label class="mode-control" for="visualModeSelect">
+                <span>Visual Mode</span>
+                <select id="visualModeSelect">
+                  <option value="6" selected>Mode 6: Combined View (Multi-layer)</option>
+                  <option value="1">Mode 1: Camera Only</option>
+                  <option value="2">Mode 2: MediaPipe Skeleton</option>
+                  <option value="3">Mode 3: RTMW3D 3D Skeleton</option>
+                  <option value="4">Mode 4: BodyPix 24-Part Segmentation</option>
+                  <option value="5">Mode 5: EMOSH 3D Body Mesh</option>
+                </select>
+              </label>
 
-            <label class="mode-control" for="renderMode">
-              <span>Rendering mode</span>
-              <select id="renderMode">
-                <option value="camera" selected>Live camera + PPE overlay (AR)</option>
-                <option value="camera-avatar">Live camera + 3D human avatar</option>
-                <option value="environment">3D environment</option>
-              </select>
-            </label>
+              <label class="mode-control" for="renderMode">
+                <span>Rendering Mode</span>
+                <select id="renderMode">
+                  <option value="camera" selected>Live camera + PPE overlay (AR)</option>
+                  <option value="camera-avatar">Live camera + 3D human avatar</option>
+                  <option value="environment">3D environment</option>
+                </select>
+              </label>
+            </div>
 
             <!-- EMOSH-Tracker Reconstruction & 3D Playback Bar -->
             <div class="emosh-control-bar" id="emoshControlBar">
@@ -181,17 +195,17 @@
                 <input id="emoshTimeline" type="range" min="0" max="100" value="0" step="1" title="Scrub reconstruction frame" />
                 <span class="emosh-frame-counter" id="emoshFrameCounter">Frame: 0 / 0</span>
               </div>
-              <p class="emosh-telemetry" id="emoshTelemetryText">EMOSH GPU: Standby · Advanced SMPL-X Surface (55 Kinematic Joints & Confidence Heatmap)</p>
+              <p class="emosh-telemetry" id="emoshTelemetryText">EMOSH GPU: Standby · Advanced SMPL-X Surface (55 Kinematic Joints &amp; Confidence Heatmap)</p>
             </div>
 
-            <!-- Prominent Live 3D Model Manual Scale Control -->
+            <!-- Prominent Live 3D Model Manual Scale & Depth Control -->
             <div class="scale-control-bar" id="scaleControlBar">
               <div class="scale-control-header">
                 <div class="scale-control-title">
                   <svg viewBox="0 0 20 20" fill="none" width="16" height="16" stroke="currentColor" stroke-width="2">
                     <path d="M4 10h12M10 4v12"></path>
                   </svg>
-                  <strong>3D Model Scale</strong>
+                  <strong>3D Model Scale &amp; Depth</strong>
                   <span class="scale-indicator" id="liveScaleBadge">150%</span>
                 </div>
                 <div class="scale-quick-presets">
@@ -205,37 +219,21 @@
                 </div>
               </div>
               <div class="scale-slider-row">
+                <span style="font-size: 11px; color: #8ba2b5; min-width: 44px;">Scale:</span>
                 <button type="button" class="step-btn" id="stepScaleDown" title="Decrease scale by 5%">−</button>
                 <input id="mainScaleSlider" type="range" min="40" max="250" value="150" step="1" />
                 <button type="button" class="step-btn" id="stepScaleUp" title="Increase scale by 5%">+</button>
               </div>
-            </div>
-
-            <div class="preview-controls">
-              <div class="preview-messages">
-                <p id="cameraMessage" role="status" aria-live="polite">
-                  Camera and face tracking run locally in this browser.
-                </p>
-                <p id="recordingMessage" role="status" aria-live="polite">
-                  Start the camera to record a clip to recordings/.
-                </p>
-              </div>
-              <div class="preview-actions">
-                <button class="camera-button" id="cameraToggle" type="button">
-                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                    <rect x="2.5" y="5" width="11" height="10" rx="2"></rect>
-                    <path d="m13.5 8 4-2v8l-4-2"></path>
-                  </svg>
-                  <span>Start camera</span>
-                </button>
-                <button class="record-button" id="recordToggle" type="button" disabled>
-                  Record clip
-                </button>
+              <div class="scale-slider-row" style="margin-top: 4px;">
+                <span style="font-size: 11px; color: #8ba2b5; min-width: 44px;">Depth:</span>
+                <input id="avatarDepth" type="range" min="-500" max="500" value="0" />
+                <output id="avatarDepthValue" for="avatarDepth" style="font-size: 11px; color: #00f0ff; font-family: monospace; min-width: 50px; text-align: right;">0 px</output>
               </div>
             </div>
 
-            <details class="debug-controls" open>
-              <summary>Motion capture diagnostics</summary>
+            <!-- Motion Capture Diagnostics (Collapsed by default on desktop) -->
+            <details class="debug-controls" id="diagnosticsDetails">
+              <summary>Tracking Diagnostics &amp; Telemetry</summary>
               <div class="debug-options">
                 <label><input id="showPoseSkeleton" type="checkbox" /> Show 2D skeleton overlay</label>
                 <label><input id="show3dDiagnosticSkeleton" type="checkbox" checked /> Show 3D diagnostic skeleton</label>
@@ -285,7 +283,7 @@
                 <span id="bodyPartPeople">People: --</span>
               </div>
 
-              <!-- Unified 4-Engine Diagnostics Dashboard (Section 6) -->
+              <!-- Unified 4-Engine Diagnostics Dashboard -->
               <div class="unified-dashboard-card" id="unifiedDashboard">
                 <h4>Unified Tracking Diagnostics Dashboard</h4>
                 <div class="diagnostics-grid">
@@ -316,118 +314,49 @@
               </button>
             </details>
 
-            <section class="calibration-controls" aria-labelledby="avatarCalibrationTitle">
-              <div class="calibration-heading">
-                <div>
-                  <p class="eyebrow">HUMAN 3D MODEL CALIBRATION</p>
-                  <h3 id="avatarCalibrationTitle">Calibrate 3D avatar</h3>
-                </div>
-                <button class="reset-button" id="resetAvatarSliders" type="button">
-                  Reset
-                </button>
-              </div>
-              <div class="calibration-grid">
-                <label class="calibration-slider" for="avatarSize">
-                  <span class="calibration-label">
-                    <span>Size scale</span>
-                    <output id="avatarSizeValue" for="avatarSize">150%</output>
-                  </span>
-                  <input id="avatarSize" type="range" min="30" max="250" value="150" />
-                </label>
-                <label class="calibration-slider" for="avatarDepth">
-                  <span class="calibration-label">
-                    <span>Depth offset</span>
-                    <output id="avatarDepthValue" for="avatarDepth">0 px</output>
-                  </span>
-                  <input
-                    id="avatarDepth"
-                    type="range"
-                    min="-500"
-                    max="500"
-                    value="0"
-                  />
-                </label>
-              </div>
-              <p class="calibration-help">
-                Adjust the 3D human model size scale and forward/backward depth offset.
-              </p>
-            </section>
-
-            <section class="calibration-controls" aria-labelledby="calibrationTitle">
-              <div class="calibration-heading">
-                <div>
-                  <p class="eyebrow">OVERLAY ALIGNMENT</p>
-                  <h3 id="calibrationTitle">Calibrate mask</h3>
-                </div>
-                <button class="reset-button" id="resetCalibration" type="button">
-                  Reset
-                </button>
+            <!-- Advanced Alignment Calibration (collapsed) -->
+            <details class="debug-controls" id="calibrationDetails">
+              <summary>Manual Mask &amp; Alignment Offsets</summary>
+              <div class="calibration-heading" style="margin-top: 10px;">
+                <span style="font-size: 11px; font-weight: 600; color: #a0b5c5;">Face Mask Offsets</span>
+                <button class="reset-button" id="resetCalibration" type="button">Reset Mask</button>
               </div>
               <div class="calibration-grid">
                 <label class="calibration-slider" for="maskSize">
-                  <span class="calibration-label">
-                    <span>Size</span>
-                    <output id="maskSizeValue" for="maskSize">100%</output>
-                  </span>
+                  <span class="calibration-label"><span>Size</span><output id="maskSizeValue" for="maskSize">100%</output></span>
                   <input id="maskSize" type="range" min="25" max="250" value="100" />
                 </label>
                 <label class="calibration-slider" for="maskOffsetX">
-                  <span class="calibration-label">
-                    <span>Horizontal offset</span>
-                    <output id="maskOffsetXValue" for="maskOffsetX">0 px</output>
-                  </span>
-                  <input
-                    id="maskOffsetX"
-                    type="range"
-                    min="-300"
-                    max="300"
-                    value="0"
-                  />
+                  <span class="calibration-label"><span>Horizontal offset</span><output id="maskOffsetXValue" for="maskOffsetX">0 px</output></span>
+                  <input id="maskOffsetX" type="range" min="-300" max="300" value="0" />
                 </label>
                 <label class="calibration-slider" for="maskOffsetY">
-                  <span class="calibration-label">
-                    <span>Vertical offset</span>
-                    <output id="maskOffsetYValue" for="maskOffsetY">0 px</output>
-                  </span>
-                  <input
-                    id="maskOffsetY"
-                    type="range"
-                    min="-300"
-                    max="300"
-                    value="0"
-                  />
+                  <span class="calibration-label"><span>Vertical offset</span><output id="maskOffsetYValue" for="maskOffsetY">0 px</output></span>
+                  <input id="maskOffsetY" type="range" min="-300" max="300" value="0" />
                 </label>
                 <label class="calibration-slider" for="maskDepth">
-                  <span class="calibration-label">
-                    <span>Depth</span>
-                    <output id="maskDepthValue" for="maskDepth">0 px</output>
-                  </span>
-                  <input
-                    id="maskDepth"
-                    type="range"
-                    min="-500"
-                    max="450"
-                    value="0"
-                  />
+                  <span class="calibration-label"><span>Depth</span><output id="maskDepthValue" for="maskDepth">0 px</output></span>
+                  <input id="maskDepth" type="range" min="-500" max="450" value="0" />
                 </label>
               </div>
-              <p class="calibration-help">
-                Positive offsets move right/down; positive depth moves toward the camera.
-              </p>
-            </section>
+              <input id="avatarSize" type="hidden" value="150" />
+              <output id="avatarSizeValue" hidden>150%</output>
+              <button class="reset-button" id="resetAvatarSliders" type="button" style="display: none;">Reset Avatar</button>
+            </details>
           </section>
 
+          <!-- Right Column: PPE Checklist, 3D Equipment Slots & Interactive 3D Viewer -->
           <aside class="equipment-panel panel" aria-labelledby="equipmentTitle">
             <div class="panel-heading">
               <div>
-                <p class="eyebrow">SESSION SETUP</p>
-                <h2 id="equipmentTitle">PPE checklist</h2>
+                <p class="eyebrow">EQUIPMENT VERIFICATION</p>
+                <h2 id="equipmentTitle">PPE Checklist</h2>
               </div>
               <span class="check-count" id="checkCount">0 / 4</span>
             </div>
 
             <p class="equipment-intro">
-              Select the equipment you are wearing for this session.
+              Toggle the safety gear items active for this inspection session.
             </p>
 
             <div class="equipment-list" role="group" aria-label="PPE items">
@@ -465,14 +394,6 @@
               </button>
             </div>
 
-            <div class="notice">
-              <span class="notice-icon" aria-hidden="true">i</span>
-              <p>
-                Face tracking and 3D pose retargeting position the SCBA mask on the face
-                and the SCBA compressed air cylinder apparatus on the back.
-              </p>
-            </div>
-
             <div class="equipment-customizer" id="equipmentCustomizerSection">
               <div class="panel-heading customizer-header">
                 <div>
@@ -483,7 +404,7 @@
               </div>
 
               <p class="equipment-intro">
-                Upload your own 3D models (GLB, GLTF, FBX, OBJ) to replace or customize each equipment slot.
+                Select a slot, choose presets or upload custom 3D models (GLB, GLTF, FBX, OBJ).
               </p>
 
               <!-- Slot Selector Pills -->
@@ -600,33 +521,29 @@
                   <span class="slot-filename-readout" id="slotFilenameReadout">Using Built-in Model</span>
                 </div>
               </div>
+
+              <!-- Integrated Interactive 3D Model Stage -->
+              <div class="model-panel-integrated" style="margin-top: 14px;">
+                <div class="panel-heading" style="margin-bottom: 8px;">
+                  <div>
+                    <p class="eyebrow">3D ASSET INSPECTOR</p>
+                    <h4 id="modelTitle" style="margin: 0; font-size: 13px; font-weight: 700; color: #fff;">Safety Helmet</h4>
+                  </div>
+                  <span class="model-status" id="modelStatus" role="status" aria-live="polite">READY</span>
+                </div>
+                <div class="model-stage" id="modelViewer" style="height: 250px;">
+                  <p class="model-placeholder" id="modelMessage">Loading 3D model...</p>
+                </div>
+                <div class="model-controls">
+                  <span style="color: var(--muted); font-size: 10px;">Drag to rotate · scroll to zoom</span>
+                  <button class="reset-button" id="resetModelView" type="button" disabled>
+                    Reset view
+                  </button>
+                </div>
+              </div>
             </div>
           </aside>
         </div>
-
-        <section class="model-panel panel" aria-labelledby="modelTitle">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">3D ASSET</p>
-              <h2 id="modelTitle">SCBA Kit (Mask &amp; Cylinder)</h2>
-            </div>
-            <span class="model-status" id="modelStatus" role="status" aria-live="polite">
-              LOADING MODEL
-            </span>
-          </div>
-          <div class="model-stage" id="modelViewer">
-            <p class="model-placeholder" id="modelMessage">Loading 3D model...</p>
-          </div>
-          <div class="model-controls">
-            <p>Drag to rotate · scroll to zoom</p>
-            <button class="reset-button" id="resetModelView" type="button" disabled>
-              Reset view
-            </button>
-          </div>
-          <p class="model-disclaimer">
-            The FBX is previewed here and positioned over the detected face in the camera view.
-          </p>
-        </section>
 
         <footer class="page-footer">
           <span>AI INTELLIGENT SAFETY MIRROR</span>

@@ -21,7 +21,7 @@ $wscript = New-Object -ComObject WScript.Shell
 $localShortcut = $wscript.CreateShortcut($localShortcutPath)
 $localShortcut.TargetPath = $exePath
 $localShortcut.WorkingDirectory = $scriptDir
-$localShortcut.Description = "Zenturio AI Intelligent Safety Mirror - Industrial PPE & SCBA Verification"
+$localShortcut.Description = "AI Intelligent Safety Mirror - Industrial PPE & SCBA Verification"
 if (Test-Path $iconPath) {
     $localShortcut.IconLocation = "$iconPath,0"
 }
@@ -33,7 +33,7 @@ try {
     $desktopShortcut = $wscript.CreateShortcut($desktopShortcutPath)
     $desktopShortcut.TargetPath = $exePath
     $desktopShortcut.WorkingDirectory = $scriptDir
-    $desktopShortcut.Description = "Zenturio AI Intelligent Safety Mirror - Industrial PPE & SCBA Verification"
+    $desktopShortcut.Description = "AI Intelligent Safety Mirror - Industrial PPE & SCBA Verification"
     if (Test-Path $iconPath) {
         $desktopShortcut.IconLocation = "$iconPath,0"
     }

@@ -70,7 +70,7 @@ Get-ChildItem -Path $emoshSource -File | ForEach-Object {
 # Generate clear portable README.txt in package root
 $readmeContent = @"
 ================================================================================
-           ZENTURIO AI INTELLIGENT SAFETY MIRROR (PORTABLE EDITION)
+           AI INTELLIGENT SAFETY MIRROR (PORTABLE EDITION)
 ================================================================================
 
 HOW TO RUN:
@@ -79,7 +79,7 @@ HOW TO RUN:
 3. Allow camera permissions when prompted (permissions are saved automatically).
 
 OPTIONAL DESKTOP SHORTCUT:
-- Double-click "CreateDesktopShortcut.bat" to place a branded shortcut on your
+- Double-click "CreateDesktopShortcut.bat" to place a shortcut on your
   Windows Desktop.
 
 FOLDER CONTENTS:
@@ -105,7 +105,7 @@ RECORDINGS:
   stored in a "recordings\" folder created right alongside SafetyMirror.exe.
 
 ================================================================================
-Developed by Zenturio - Industrial Intelligent Safety
+AI Intelligent Safety Mirror System - Industrial PPE Verification
 ================================================================================
 "@
 
